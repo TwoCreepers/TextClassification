@@ -1,5 +1,6 @@
+from collections.abc import Sequence
 from copy import deepcopy
-from typing import Any, Literal, Sequence
+from typing import Any, Literal
 
 from torch import device, dtype, nn
 from torch.nn.utils.parametrizations import weight_norm
@@ -197,7 +198,7 @@ def _mlp_norm_act(
     hidden_widths = list(hidden_c) if hidden_c is not None else []
 
     if inner_act is None and isinstance(act, str):
-        inner_act = act # pyright: ignore[reportAssignmentType]
+        inner_act = act  # pyright: ignore[reportAssignmentType]
 
     conv_cls: type[nn.Conv1d] | type[nn.Conv2d] = nn.Conv1d if nd == 1 else nn.Conv2d
 
@@ -232,7 +233,11 @@ def _mlp_norm_act(
             layers.append(inner)
 
     mapper: TensorMap = nn.Sequential(*layers)
-    act = build_activation(act, in_c if act_pos == "before map" else out_c, device, dtype) if isinstance(act, str) else act # pyright: ignore[reportArgumentType]
+    act = (
+        build_activation(act, in_c if act_pos == "before map" else out_c, device, dtype)
+        if isinstance(act, str)
+        else act
+    )
 
     return NormAct(mapper, norm, norm_pos, act, act_pos, post_process, post_process_pos)
 
@@ -248,7 +253,7 @@ def _build_inner_act(
     if spec is None:
         return None
     if isinstance(spec, str):
-        return build_activation(spec, channels, device, dtype) # pyright: ignore[reportArgumentType]
+        return build_activation(spec, channels, device, dtype)
     if isinstance(spec, nn.Module):
         return spec if is_first else deepcopy(spec)
     return LambdaModule(spec)

@@ -14,3 +14,44 @@ members = [
     "packages/FishEdTorchBaseLib",
     "ml",
 ]
+
+[dependency-groups]
+dev = [
+    "pyright>=1.1.414",
+    "ruff>=0.17.2",
+]
+
+[tool.ruff]
+target-version = "py313"
+line-length = 120
+
+[tool.ruff.lint]
+select = [
+    "E4",  # pycodestyle：导入相关的语法错误
+    "E7",  # pycodestyle：语法错误（如多余的括号）
+    "E9",  # pycodestyle：运行时相关错误
+    "F",   # pyflakes：未使用导入、未定义名等
+    "I",   # isort：导入排序与分组
+    "UP",  # pyupgrade：按目标 Python 版本升级旧写法
+]
+ignore = [
+    # `type X = ...` 生成的是 TypeAliasType，不能作为基类使用，
+    # 而本库的 BaseTensorModule 等别名正是被当作基类继承的。
+    "UP040",
+]
+
+[tool.ruff.lint.per-file-ignores]
+# __init__.py 里的导入就是包对外的再导出，不属于未使用。
+"**/__init__.py" = ["F401"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["fishetbl", "ml"]
+
+[tool.pyright]
+include = ["packages", "ml"]
+exclude = ["**/__pycache__", "**/.venv"]
+pythonVersion = "3.13"
+typeCheckingMode = "standard"
+venvPath = "."
+venv = ".venv"
+

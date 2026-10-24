@@ -1,8 +1,8 @@
 from typing import override
 
 from ..base.BaseModule import BaseModule
-from ..typing.alias import TransformMap
 from ..mixin.NumberedContainerMixin import NumberedContainerMixin
+from ..typing.alias import TransformMap
 
 
 class Vertical[T](

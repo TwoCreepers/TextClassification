@@ -1,12 +1,12 @@
-from typing import Callable, Literal, override
+from collections.abc import Callable
+from typing import Literal, override
 
 from torch import Tensor, cat, nn
 
-from ..base.TypeModule import TypeModule
 from ..base.BaseModule import BaseModule, BaseTensorModule
+from ..base.TypeModule import TypeModule
 from ..typing.alias import TensorMap
 from .Identity import Identity
-
 
 type NormPosType = Literal["before map", "after map"]
 type ActPosType = Literal["before map", "after map"]
@@ -15,15 +15,18 @@ type PostProcessPosType = Literal["finally", "before act or invalid"]
 type PostModule = TypeModule[[Tensor, Tensor], Tensor]
 type PostModuleBuilder = Callable[[], PostModule]
 
+
 class NormAct(BaseTensorModule):
     class IdentityPostModule(BaseModule[[Tensor, Tensor], Tensor]):
         @override
         def forward(self, output: Tensor, input: Tensor) -> Tensor:
             return output
+
     class ResidualPostModule(BaseModule[[Tensor, Tensor], Tensor]):
         @override
         def forward(self, output: Tensor, input: Tensor) -> Tensor:
             return output + input
+
     class ConcatenatePostModule(BaseModule[[Tensor, Tensor], Tensor]):
         @override
         def forward(self, output: Tensor, input: Tensor) -> Tensor:
@@ -34,14 +37,14 @@ class NormAct(BaseTensorModule):
     post_process_pos: PostProcessPosType
 
     def __init__(
-            self,
-            mapper: TensorMap,
-            norm: TensorMap | None = None,
-            norm_pos: NormPosType = "after map",
-            act: TensorMap | None = None,
-            act_pos: ActPosType = "after map",
-            post_process: PostModule | PostModuleBuilder = IdentityPostModule,
-            post_process_pos: PostProcessPosType = "before act or invalid",
+        self,
+        mapper: TensorMap,
+        norm: TensorMap | None = None,
+        norm_pos: NormPosType = "after map",
+        act: TensorMap | None = None,
+        act_pos: ActPosType = "after map",
+        post_process: PostModule | PostModuleBuilder = IdentityPostModule,
+        post_process_pos: PostProcessPosType = "before act or invalid",
     ) -> None:
         super().__init__()
         self.mapper = mapper

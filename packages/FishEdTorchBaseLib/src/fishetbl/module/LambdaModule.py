@@ -1,4 +1,5 @@
-from typing import Callable, override
+from collections.abc import Callable
+from typing import override
 
 from ..base.BaseModule import BaseModule
 

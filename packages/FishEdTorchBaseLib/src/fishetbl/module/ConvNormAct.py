@@ -3,10 +3,10 @@ from typing import Literal
 from torch import device, dtype, nn
 from torch.nn.utils.parametrizations import weight_norm
 
-from ..typing.alias import TensorMap, Size2d, ActStrType, Map
+from ..typing.alias import ActStrType, Map, Size2d, TensorMap
 from ..utils._act import build_activation
 from .ChannelRmsNorm import ChannelRmsNorm
-from .NormAct import NormAct, NormPosType, ActPosType, PostProcessPosType, PostModule, PostModuleBuilder
+from .NormAct import ActPosType, NormAct, NormPosType, PostModule, PostModuleBuilder, PostProcessPosType
 
 
 def ConvNormAct2d(
@@ -15,7 +15,7 @@ def ConvNormAct2d(
     ks: int | Size2d,
     stride: int | Size2d = 1,
     padding: Literal["valid", "same"] | int | Size2d = "same",
-    padding_mode: Literal['zeros', 'reflect', 'replicate', 'circular'] = "zeros",
+    padding_mode: Literal["zeros", "reflect", "replicate", "circular"] = "zeros",
     dilation: int | Size2d = 1,
     groups: int = 1,
     bias: bool | None = None,
@@ -63,6 +63,10 @@ def ConvNormAct2d(
     if is_norm_weight:
         conv = weight_norm(conv)
 
-    act = build_activation(act, in_c if act_pos == "before map" else out_c, device, dtype) if isinstance(act, str) else act # pyright: ignore[reportArgumentType]
+    act = (
+        build_activation(act, in_c if act_pos == "before map" else out_c, device, dtype)
+        if isinstance(act, str)
+        else act
+    )
 
     return NormAct(conv, norm, norm_pos, act, act_pos, post_process, post_process_pos)

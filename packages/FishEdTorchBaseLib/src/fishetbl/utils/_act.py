@@ -1,13 +1,11 @@
 from functools import partial
 
+import torch.nn as nn
 from torch import device, dtype
 
-from ..typing.alias import ActStrType
-
-import torch.nn as nn
 
 def build_activation(
-    act: ActStrType,
+    act: str,
     channels: int,
     device: device | None = None,
     dtype: dtype | None = None,
@@ -17,7 +15,8 @@ def build_activation(
     支持 inplace 的激活统一使用 inplace=True。
 
     Args:
-        act:      激活函数名称（ActStrType）
+        act:      激活函数名称，取值见 :data:`fishetbl.typing.alias.ActStrType`；
+                  不支持的名字会在运行时抛 ``ValueError``。
         channels: 通道数，仅 PReLU 使用（其可学习参数数量）
         device:   模块参数所在设备
         dtype:    模块参数数据类型
@@ -26,20 +25,20 @@ def build_activation(
         对应的 nn.Module 实例
     """
     factories = {
-        "relu":        partial(nn.ReLU, inplace=True),
-        "relu6":       partial(nn.ReLU6, inplace=True),
-        "selu":        partial(nn.SELU, inplace=True),
-        "silu":        partial(nn.SiLU, inplace=True),
-        "mish":        partial(nn.Mish, inplace=True),
+        "relu": partial(nn.ReLU, inplace=True),
+        "relu6": partial(nn.ReLU6, inplace=True),
+        "selu": partial(nn.SELU, inplace=True),
+        "silu": partial(nn.SiLU, inplace=True),
+        "mish": partial(nn.Mish, inplace=True),
         "hardsigmoid": partial(nn.Hardsigmoid, inplace=True),
-        "hardswish":   partial(nn.Hardswish, inplace=True),
-        "sigmoid":     nn.Sigmoid,
-        "tanh":        nn.Tanh,
-        "logsigmoid":  nn.LogSigmoid,
-        "softsign":    nn.Softsign,
-        "tanhshrink":  nn.Tanhshrink,
-        "gelu":        nn.GELU,
-        "prelu":       partial(nn.PReLU, num_parameters=channels),
+        "hardswish": partial(nn.Hardswish, inplace=True),
+        "sigmoid": nn.Sigmoid,
+        "tanh": nn.Tanh,
+        "logsigmoid": nn.LogSigmoid,
+        "softsign": nn.Softsign,
+        "tanhshrink": nn.Tanhshrink,
+        "gelu": nn.GELU,
+        "prelu": partial(nn.PReLU, num_parameters=channels),
     }
 
     if act not in factories:

@@ -1,9 +1,11 @@
-from typing import Sequence, override
+from collections.abc import Sequence
+from typing import override
 
 from torch.nn.functional import pad as torch_pad
 
 from ...base.BaseModule import BaseTensorModule, Tensor
 from ...typing.alias import PadMode
+
 
 class Padding(BaseTensorModule):
     """张量填充模块，封装 :func:`torch.nn.functional.pad`。
@@ -28,6 +30,7 @@ class Padding(BaseTensorModule):
     pad: tuple[int, int] | Sequence[int]
     pad_mode: PadMode
     value: float | None
+
     @override
     def __init__(
         self,

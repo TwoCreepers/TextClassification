@@ -1,11 +1,12 @@
-from typing import Sequence, override
+from collections.abc import Sequence
+from typing import override
 
 from ..base.BaseModule import BaseTensorModule, Tensor
+from ..module.Identity import Identity
+from ..module.tensor.SliceIdx import SliceIdx
+from ..module.tensor.Unsqueeze import Unsqueeze
 from ..typing.alias import SliceIndex
 from ..utils._assert import _assert
-from ..module.Identity import Identity
-from ..module.tensor.Unsqueeze import Unsqueeze
-from ..module.tensor.SliceIdx import SliceIdx
 
 
 def _build_idx(ndim: int, dims: Sequence[int]) -> SliceIndex:
@@ -41,8 +42,7 @@ def _build_idx(ndim: int, dims: Sequence[int]) -> SliceIndex:
     for d in dims:
         _assert(
             -(n + 1) <= d <= n,
-            f"维度 {d} 越界（当前维度数 {n}，插入后维度数 {n + 1}，"
-            f"合法范围 [-{n + 1}, {n}]）",
+            f"维度 {d} 越界（当前维度数 {n}，插入后维度数 {n + 1}，合法范围 [-{n + 1}, {n}]）",
         )
         if d < 0:
             d += n + 1
@@ -311,8 +311,7 @@ def Expand_Dims(dims: int | Sequence[int], ndim: int | None = None) -> BaseTenso
             d = dims[0]
             _assert(
                 -(ndim + 1) <= d <= ndim,
-                f"维度 {d} 越界（插入后维度数 {ndim + 1}，"
-                f"合法范围 [-{ndim + 1}, {ndim}]）",
+                f"维度 {d} 越界（插入后维度数 {ndim + 1}，合法范围 [-{ndim + 1}, {ndim}]）",
             )
         return Unsqueeze(dims[0])
 

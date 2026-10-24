@@ -34,5 +34,6 @@ class BaseModule[**TArgs, TResult](BufferMixin, TypeModule[TArgs, TResult]):
 
     ...  # 行为完全由 BufferMixin 与 TypeModule 的 MRO 组合而来
 
+
 BaseTensorModule: TypeAlias = BaseModule[[Tensor], Tensor]
 BaseTensorBranchesModule: TypeAlias = BaseModule[[Tensor], tuple[Tensor, ...]]

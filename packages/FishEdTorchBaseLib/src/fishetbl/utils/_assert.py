@@ -1,17 +1,19 @@
+from collections.abc import Generator
 from contextlib import contextmanager
-from typing import Any, Generator, Literal
+from typing import Any, Literal
 
 import torch
 
-
 ASSERT_MODE: Literal["enable", "disable", "enable_ignore_onnx_status"] = "enable"
+
 
 def _set_mode(mode: Literal["enable", "disable", "enable_ignore_onnx_status"]) -> None:
     global ASSERT_MODE
-    ASSERT_MODE= mode
+    ASSERT_MODE = mode
+
 
 @contextmanager
-def _assert_mode(mode: Literal["enable", "disable", "enable_ignore_onnx_status"]) -> Generator[None, None, None]:
+def _assert_mode(mode: Literal["enable", "disable", "enable_ignore_onnx_status"]) -> Generator[None]:
     global ASSERT_MODE
     original = ASSERT_MODE
     ASSERT_MODE = mode

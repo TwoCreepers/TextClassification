@@ -1,12 +1,13 @@
-from typing import Literal, Sequence, override
+from collections.abc import Sequence
+from typing import Literal, override
 
 from torch.nn.functional import pad as torch_pad
 
 from ..base.BaseModule import BaseTensorModule, Tensor
-from ..typing.alias import PadAlign, PadMode
-from ..utils._assert import _assert
 from ..module.Identity import Identity
 from ..module.tensor.Padding import Padding
+from ..typing.alias import PadAlign, PadMode
+from ..utils._assert import _assert
 
 
 def _build_pad_sequence(ndim: int, dims: Sequence[int], pad: Sequence[int]):
@@ -99,8 +100,7 @@ def _split_pad(total: int, align: PadAlign) -> tuple[int, int]:
     if align == "center_start":
         return sign * after_mag, sign * before_mag
     raise AssertionError(
-        f"未知的 align: {align!r}，"
-        f"应为 'end' / 'start' / 'center_end' / 'center_start'",
+        f"未知的 align: {align!r}，应为 'end' / 'start' / 'center_end' / 'center_start'",
     )
 
 
@@ -127,13 +127,13 @@ def _compute_pad_pairs(
 
 
 def pad(
-        x: Tensor,
-        pad: tuple[int, int] | Sequence[int],
-        dims: int | Sequence[int] = -1,
-        pad_mode: PadMode = "constant",
-        value: float | None = None,
-        ndim: int | None = None
-    ) -> Tensor:
+    x: Tensor,
+    pad: tuple[int, int] | Sequence[int],
+    dims: int | Sequence[int] = -1,
+    pad_mode: PadMode = "constant",
+    value: float | None = None,
+    ndim: int | None = None,
+) -> Tensor:
     """在张量的指定维度上执行填充。
 
     与 :func:`torch.nn.functional.pad` 相比，本函数通过 ``dims`` 显式
@@ -216,12 +216,12 @@ class _Pad_Not_Known_Ndim(BaseTensorModule):
 
     @override
     def __init__(
-            self,
-            pad: tuple[int, int] | Sequence[int],
-            dims: Sequence[int],
-            pad_mode: PadMode = "constant",
-            value: float | None = None,
-        ) -> None:
+        self,
+        pad: tuple[int, int] | Sequence[int],
+        dims: Sequence[int],
+        pad_mode: PadMode = "constant",
+        value: float | None = None,
+    ) -> None:
         """保存填充参数。
 
         Args:
@@ -254,12 +254,12 @@ class _Pad_Not_Known_Ndim(BaseTensorModule):
 
 
 def Pad(
-        pad: tuple[int, int] | Sequence[int],
-        dims: int | Sequence[int] = -1,
-        pad_mode: PadMode = "constant",
-        value: float | None = None,
-        ndim: int | None = None
-    ) -> BaseTensorModule:
+    pad: tuple[int, int] | Sequence[int],
+    dims: int | Sequence[int] = -1,
+    pad_mode: PadMode = "constant",
+    value: float | None = None,
+    ndim: int | None = None,
+) -> BaseTensorModule:
     """构造填充张量的模块。
 
     Args:
@@ -438,7 +438,7 @@ def pad_align(
     x: Tensor,
     frame_lens: int | Sequence[int],
     dims: int | Sequence[int] = -1,
-    pad_mode: Literal['constant', 'reflect', 'replicate', 'circular'] = "constant",
+    pad_mode: Literal["constant", "reflect", "replicate", "circular"] = "constant",
     align: PadAlign = "center_end",
     value: float | None = None,
 ) -> Tensor:
@@ -545,7 +545,7 @@ class Pad_Align(BaseTensorModule):
 
     frame_lens: tuple[int, ...]
     dims: tuple[int, ...]
-    pad_mode: Literal['constant', 'reflect', 'replicate', 'circular']
+    pad_mode: Literal["constant", "reflect", "replicate", "circular"]
     align: PadAlign
     value: float | None
 
@@ -554,7 +554,7 @@ class Pad_Align(BaseTensorModule):
         self,
         frame_lens: int | Sequence[int],
         dims: int | Sequence[int] = -1,
-        pad_mode: Literal['constant', 'reflect', 'replicate', 'circular'] = "constant",
+        pad_mode: Literal["constant", "reflect", "replicate", "circular"] = "constant",
         align: PadAlign = "center_end",
         value: float | None = None,
     ) -> None:
@@ -578,8 +578,7 @@ class Pad_Align(BaseTensorModule):
         self.dims = (dims,) if isinstance(dims, int) else tuple(dims)
         _assert(
             len(self.frame_lens) == len(self.dims),
-            f"frame_lens 长度 ({len(self.frame_lens)}) 必须与 dims 长度 "
-            f"({len(self.dims)}) 一致",
+            f"frame_lens 长度 ({len(self.frame_lens)}) 必须与 dims 长度 ({len(self.dims)}) 一致",
         )
         self.pad_mode = pad_mode
         self.align = align

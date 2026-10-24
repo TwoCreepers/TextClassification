@@ -1,8 +1,8 @@
 from typing import override
 
 from ..base.BaseModule import BaseModule
-from ..typing.alias import Map
 from ..mixin.NumberedContainerMixin import NumberedContainerMixin
+from ..typing.alias import Map
 
 
 class Horizontal[TMapperInput, TMapperOutput](

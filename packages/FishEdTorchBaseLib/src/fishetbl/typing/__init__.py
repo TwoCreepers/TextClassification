@@ -1,1 +1,1 @@
-from .alias import IndexAtom, SliceIndex, Map, TensorMap, TransformMap, PadMode, PadAlign, ActStrType, Size2d
+from .alias import ActStrType, IndexAtom, Map, PadAlign, PadMode, Size2d, SliceIndex, TensorMap, TransformMap

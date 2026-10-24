@@ -5,5 +5,5 @@ from .Horizontal import Horizontal
 from .Identity import Identity
 from .LambdaModule import LambdaModule
 from .MlpNormAct import MlpNormAct1d, MlpNormAct2d
-from .Vertical import Vertical
 from .NormAct import NormAct, PostModule, PostModuleBuilder
+from .Vertical import Vertical

@@ -1,4 +1,5 @@
-from typing import Generator, Self, overload
+from collections.abc import Generator
+from typing import Self, overload
 
 
 class NumberedContainerMixin[T]:
@@ -26,7 +27,7 @@ class NumberedContainerMixin[T]:
     def __len__(self) -> int:
         return self._item_len
 
-    def __iter__(self) -> Generator[T, None, None]:
+    def __iter__(self) -> Generator[T]:
         for i in range(self._item_len):
             yield getattr(self, str(i))
 
@@ -38,10 +39,7 @@ class NumberedContainerMixin[T]:
         if isinstance(key, int):
             idx = key + self._item_len if key < 0 else key
             if idx < 0 or idx >= self._item_len:
-                raise IndexError(
-                    f"{type(self).__name__} index out of range: "
-                    f"{key} (length {self._item_len})"
-                )
+                raise IndexError(f"{type(self).__name__} index out of range: {key} (length {self._item_len})")
             return getattr(self, str(idx))
 
         start, stop, step = key.indices(self._item_len)

@@ -1,5 +1,5 @@
-from torch import Tensor
 import torch.nn as nn
+from torch import Tensor
 
 from ..utils._Sentinel import SENTINEL
 
