@@ -1,0 +1,50 @@
+# THUCNews 字节级最小可行分类模型配置。
+# 所有字段都可省略，省略时回落到 ml/src/ml/config.py 里的 dataclass 默认值。
+
+[data]
+dataset_name = "seamew/THUCNews"
+# datasets 5.x 不再支持 dataset script，这里读取 Hub 自动转换的 parquet 分支。
+revision = "refs/convert/parquet"
+text_column = "text"
+label_column = "label"
+train_split = "train"
+val_split = "validation"
+test_split = "test"
+max_length = 512
+batch_size = 64
+num_workers = 0
+
+[model]
+# byte 词表：token id 即字节值，0 号兼作 padding。
+vocab_size = 256
+num_classes = 10
+bias = true
+
+[optim]
+lr = 0.001
+weight_decay = 0.0
+
+[logger]
+# TensorBoard：日志与 checkpoint 都在 save_dir/name/version_* 下。
+save_dir = "lightning_logs"
+name = "byte-first-token"
+log_graph = false
+
+[trainer]
+seed = 42
+max_epochs = 3
+accelerator = "auto"
+devices = 1
+precision = "32-true"
+log_every_n_steps = 50
+limit_train_batches = 1.0
+limit_val_batches = 1.0
+limit_test_batches = 1.0
+
+[compile]
+# 是否启用 torch.compile（主模型 forward，fullgraph=True）。
+enabled = true
+fullgraph = true
+# 编译自动求导 / 追踪 .item() 等标量输出。
+compiled_autograd = true
+capture_scalar_outputs = true

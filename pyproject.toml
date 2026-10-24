@@ -7,13 +7,26 @@ authors = [
     { name = "TwoCreepers", email = "z15296529345@outlook.com" }
 ]
 requires-python = ">=3.13"
-dependencies = []
+# 根项目直接依赖各 workspace 成员：这样 `uv sync` / `uv run` 会连带装齐成员的依赖。
+dependencies = [
+    "fishetbl",
+    "ml",
+]
+
+[tool.uv.sources]
+fishetbl = { workspace = true }
+ml = { workspace = true }
 
 [tool.uv.workspace]
 members = [
     "packages/FishEdTorchBaseLib",
     "ml",
 ]
+
+# 默认走清华 PyPI 镜像（PyPI 直连太慢）；不需要时删掉这段并重新 uv lock。
+[[tool.uv.index]]
+url = "https://pypi.tuna.tsinghua.edu.cn/simple"
+default = true
 
 [dependency-groups]
 dev = [

@@ -1,6 +1,6 @@
 [project]
 name = "fishetbl"
-version = "0.1.0"
+dynamic = ["version"]
 description = "Fish's torch base lib"
 readme = "README.md"
 authors = [
@@ -12,5 +12,12 @@ dependencies = [
 ]
 
 [build-system]
-requires = ["uv_build>=0.12.23,<0.13.0"]
-build-backend = "uv_build"
+requires = ["hatchling>=1.32.4,<1.33.0"]
+build-backend = "hatchling.build"
+
+# 版本号唯一来源：src/fishetbl/version.py 里的 __version__。
+[tool.hatch.version]
+path = "src/fishetbl/version.py"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/fishetbl"]
