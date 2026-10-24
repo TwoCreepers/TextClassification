@@ -1,0 +1,32 @@
+[project]
+name = "ml"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+authors = [
+    { name = "TwoCreepers", email = "z15296529345@outlook.com" }
+]
+requires-python = ">=3.13"
+dependencies = [
+    "datasets>=5.1.0",
+    "fishetbl",
+    "pytorch-lightning>=2.6.6",
+    "torch>=2.14.1",
+    "torchmetrics>=1.9.0",
+]
+
+[project.scripts]
+ml = "ml:main"
+
+[build-system]
+requires = ["uv_build>=0.12.23,<0.13.0"]
+build-backend = "uv_build"
+
+[[tool.uv.index]]
+name = "pytorch-cu132"
+url = "https://download.pytorch.org/whl/cu132"
+explicit = true
+
+[tool.uv.sources]
+torch = { index = "pytorch-cu132" }
+fishetbl = { workspace = true }
