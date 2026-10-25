@@ -35,17 +35,39 @@ class DataConfig:
     val_split: str = "validation"
     test_split: str = "test"
     max_length: int = 512
+    # 固定补齐到 max_length：batch 形状恒定，torch.compile 无需动态形状、只需编译一次。
+    # 关闭则按 batch 内最长序列补齐（变长），torch.compile 会自动改用动态形状。
+    pad_to_max_length: bool = True
     batch_size: int = 64
     num_workers: int = 0
+
+
+type ModelArchType = Literal["first_token", "byte_film"]
 
 
 @dataclass(frozen=True)
 class ModelConfig:
     """主模型配置。"""
 
+    arch: ModelArchType = "first_token"
     vocab_size: int = 256
     num_classes: int = 10
     bias: bool = True
+    use_padding_mask: bool = True
+
+
+@dataclass(frozen=True)
+class ArchConfig:
+    """``byte_film`` 架构的超参。"""
+
+    d_k: int = 64
+    d_v: int = 64
+    n_q: int = 16
+    d_block: int = 768
+    blocks_per_round: int = 2
+    rounds: int = 3
+    attention_dropout: float = 0.0
+    film_identity_init: bool = True
 
 
 @dataclass(frozen=True)
@@ -82,7 +104,13 @@ class TrainerConfig:
 
 @dataclass(frozen=True)
 class CompileConfig:
-    """torch.compile 及其 dynamo 开关配置。"""
+    """torch.compile 及其 dynamo 开关配置。
+
+    Note:
+        动态形状不在这里配置，由 ``[data] pad_to_max_length`` 自动决定：变长补齐必须开
+        动态形状（否则每个新 ``(B, L)`` 都会重编译，``fullgraph=True`` 下还会撞
+        ``recompile_limit`` 直接失败）；固定补齐则保持静态形状最快。
+    """
 
     enabled: bool = True
     fullgraph: bool = True
@@ -94,6 +122,7 @@ class CompileConfig:
 class Config:
     data: DataConfig
     model: ModelConfig
+    arch: ArchConfig
     optim: OptimConfig
     logger: LoggerConfig
     trainer: TrainerConfig
@@ -116,6 +145,7 @@ def load_config(path: str | Path) -> Config:
     return Config(
         data=_build(DataConfig, raw, "data"),
         model=_build(ModelConfig, raw, "model"),
+        arch=_build(ArchConfig, raw, "arch"),
         optim=_build(OptimConfig, raw, "optim"),
         logger=_build(LoggerConfig, raw, "logger"),
         trainer=_build(TrainerConfig, raw, "trainer"),

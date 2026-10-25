@@ -1,5 +1,6 @@
 """UTF-8 字节级数据集：把文本编码成 byte token，0 号 token 兼作 padding。"""
 
+from functools import partial
 from typing import Any
 
 import pytorch_lightning as pl
@@ -28,12 +29,21 @@ def encode_bytes(text: str, max_length: int) -> list[int]:
     return list(text.encode("utf-8"))[:max_length]
 
 
-def collate_byte_batch(batch: list[dict[str, Any]]) -> dict[str, Tensor]:
-    """按 batch 内最长序列右侧补 0，并堆叠成 ``(B, L)`` 的 ``int64`` 张量。"""
+def collate_byte_batch(batch: list[dict[str, Any]], pad_to: int | None = None) -> dict[str, Tensor]:
+    """把 batch 堆叠成 ``(B, L)`` 的 ``int64`` 张量，右侧补 0。
+
+    Args:
+        batch: 单样本字典列表，需含 ``input_ids`` 与 ``label``。
+        pad_to: 固定补齐长度。给出时所有 batch 形状一致，可以避免
+            ``torch.compile`` 因序列长度变化而反复重编译；``None`` 时补到
+            batch 内最长序列。
+    """
     encoded = [sample["input_ids"] for sample in batch]
     longest = max(1, max(len(ids) for ids in encoded))
+    if pad_to is not None:
+        longest = pad_to
     input_ids = torch.tensor(
-        [ids + [PAD_TOKEN_ID] * (longest - len(ids)) for ids in encoded],
+        [(ids + [PAD_TOKEN_ID] * longest)[:longest] for ids in encoded],
         dtype=torch.long,
     )
     labels = torch.tensor([sample["label"] for sample in batch], dtype=torch.long)
@@ -109,12 +119,13 @@ class ByteClassificationDataModule(pl.LightningDataModule):
         return _ByteSplitDataset(split.map(encode_batch, batched=True, desc=f"byte-encode {split.split}"))
 
     def _loader(self, split: str, *, shuffle: bool) -> DataLoader:
+        pad_to = self.cfg.max_length if self.cfg.pad_to_max_length else None
         return DataLoader(
             self._splits[split],
             batch_size=self.cfg.batch_size,
             shuffle=shuffle,
             num_workers=self.cfg.num_workers,
-            collate_fn=collate_byte_batch,
+            collate_fn=partial(collate_byte_batch, pad_to=pad_to),
             persistent_workers=self.cfg.num_workers > 0,
         )
 

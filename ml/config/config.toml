@@ -10,32 +10,51 @@ label_column = "label"
 train_split = "train"
 val_split = "validation"
 test_split = "test"
-max_length = 512
+max_length = 512 # 仅 pad_to_max_length=true 时生效
+# 固定补齐到 max_length：batch 形状恒定，torch.compile 用静态形状只需编译一次；
+# 改成 false 则按 batch 内最长序列补齐（变长），torch.compile 会自动改用动态形状。
+pad_to_max_length = false
 batch_size = 64
-num_workers = 0
+num_workers = 2
 
 [model]
+# 架构：first_token（基线，只看第一个 token）或 byte_film（ByteFiLM-DenseNet）。
+arch = "byte_film"
 # byte 词表：token id 即字节值，0 号兼作 padding。
 vocab_size = 256
 num_classes = 10
 bias = true
+# 是否把 padding 位置挡在 attention 之外（变长文本必须开）。
+use_padding_mask = true
+
+[arch]
+d_k = 64
+d_v = 64
+n_q = 16
+d_block = 768
+blocks_per_round = 2
+rounds = 3
+attention_dropout = 0.0
+# FiLM 初始化为恒等调制（gamma=1, beta=0）。
+film_identity_init = true
 
 [optim]
 lr = 0.001
-weight_decay = 0.0
+weight_decay = 1e-5
 
 [logger]
 # TensorBoard：日志与 checkpoint 都在 save_dir/name/version_* 下。
 save_dir = "lightning_logs"
-name = "byte-first-token"
+name = "byte_film"
 log_graph = false
 
 [trainer]
 seed = 42
-max_epochs = 3
+max_epochs = 50
 accelerator = "auto"
 devices = 1
-precision = "32-true"
+# precision = "32-true"
+precision = "bf16-mixed"
 log_every_n_steps = 50
 limit_train_batches = 1.0
 limit_val_batches = 1.0
@@ -45,6 +64,8 @@ limit_test_batches = 1.0
 # 是否启用 torch.compile（主模型 forward，fullgraph=True）。
 enabled = true
 fullgraph = true
+# 动态形状不在这里配置：由 [data] pad_to_max_length 自动决定
+# （固定补齐 -> 静态形状，一次编译；变长补齐 -> 动态形状，避免每个长度都重编译）。
 # 编译自动求导 / 追踪 .item() 等标量输出。
 compiled_autograd = true
 capture_scalar_outputs = true

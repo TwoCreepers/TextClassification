@@ -32,9 +32,10 @@ class ByteFirstTokenClassifier(BaseTensorModule):
         self.vocab_size = vocab_size
         self.projection = nn.Linear(vocab_size, num_classes, bias=bias, device=device, dtype=dtype)
 
-    def forward(self, input_ids: Tensor) -> Tensor:
+    def forward(self, input_ids: Tensor, padding_mask: Tensor | None = None) -> Tensor:
         """Args:
             input_ids: ``(B, L)`` 的 byte token，只使用第 0 列。
+            padding_mask: 仅为与序列模型保持统一的 forward 签名，这里不使用。
 
         Returns:
             ``(B, num_classes)`` 的 logits。

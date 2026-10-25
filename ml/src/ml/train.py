@@ -10,12 +10,15 @@ import pytorch_lightning as pl
 from pytorch_lightning.callbacks import ModelCheckpoint
 from pytorch_lightning.loggers import TensorBoardLogger
 
+from fishetbl.base.BaseModule import BaseTensorModule
+
+from .byte_film import ByteFiLMDenseNet
 from .callbacks import LossLoggingCallback
 from .compilation import configure_compilation
 from .config import Config, load_config
 from .data import ByteClassificationDataModule
 from .model import ByteFirstTokenClassifier
-from .module import ByteFirstTokenModule
+from .module import ByteClassifierModule
 
 DEFAULT_CONFIG_PATH = Path(__file__).resolve().parents[2] / "config" / "config.toml"
 LOGGER = logging.getLogger(__name__)
@@ -26,14 +29,21 @@ def build_datamodule(cfg: Config) -> ByteClassificationDataModule:
     return ByteClassificationDataModule(cfg.data, num_classes=cfg.model.num_classes)
 
 
-def build_module(cfg: Config) -> ByteFirstTokenModule:
-    """构建主模型并用 Lightning 模块包装。"""
-    model = ByteFirstTokenClassifier(
-        vocab_size=cfg.model.vocab_size,
-        num_classes=cfg.model.num_classes,
-        bias=cfg.model.bias,
-    )
-    return ByteFirstTokenModule(model, cfg)
+def build_module(cfg: Config) -> ByteClassifierModule:
+    """按 ``[model] arch`` 构建主模型并用 Lightning 模块包装。"""
+    if cfg.model.arch == "byte_film":
+        model: BaseTensorModule = ByteFiLMDenseNet(
+            vocab_size=cfg.model.vocab_size,
+            num_classes=cfg.model.num_classes,
+            arch=cfg.arch,
+        )
+    else:
+        model = ByteFirstTokenClassifier(
+            vocab_size=cfg.model.vocab_size,
+            num_classes=cfg.model.num_classes,
+            bias=cfg.model.bias,
+        )
+    return ByteClassifierModule(model, cfg)
 
 
 def build_logger(cfg: Config) -> TensorBoardLogger:
