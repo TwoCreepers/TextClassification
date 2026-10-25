@@ -41,7 +41,7 @@ def _build_idx(ndim: int, dims: Sequence[int]) -> SliceIndex:
     n = ndim
     for d in dims:
         _assert(
-            -(n + 1) <= d <= n,
+            lambda: -(n + 1) <= d <= n,
             f"维度 {d} 越界（当前维度数 {n}，插入后维度数 {n + 1}，合法范围 [-{n + 1}, {n}]）",
         )
         if d < 0:
@@ -72,7 +72,7 @@ def expand_dims_to_start(x: Tensor, num: int) -> Tensor:
         >>> expand_dims_to_start(x, 1).shape
         torch.Size([1, 2, 3])
     """
-    _assert(num >= 0, f"num 必须为非负整数, 但得到 {num}")
+    _assert(lambda: num >= 0, f"num 必须为非负整数, 但得到 {num}")
     slice_args = [None] * num + [...]
     return x[*slice_args]
 
@@ -134,7 +134,7 @@ def expand_dims_to_end(x: Tensor, num: int) -> Tensor:
         >>> expand_dims_to_end(x, 1).shape
         torch.Size([2, 3, 1])
     """
-    _assert(num >= 0, f"num 必须为非负整数, 但得到 {num}")
+    _assert(lambda: num >= 0, f"num 必须为非负整数, 但得到 {num}")
     slice_args = [...] + [None] * num
     return x[*slice_args]
 
@@ -218,7 +218,7 @@ def expand_dims(x: Tensor, dims: int | Sequence[int], ndim: int | None = None) -
     elif dims_len == 1:
         if ndim is not None:
             _assert(
-                ndim == x.ndim,
+                lambda: ndim == x.ndim,
                 f"显式 ndim ({ndim}) 与输入张量维度 ({x.ndim}) 不一致",
             )
         return x.unsqueeze(dims[0])
@@ -227,7 +227,7 @@ def expand_dims(x: Tensor, dims: int | Sequence[int], ndim: int | None = None) -
         ndim = x.ndim
     else:
         _assert(
-            ndim == x.ndim,
+            lambda: ndim == x.ndim,
             f"显式 ndim ({ndim}) 与输入张量维度 ({x.ndim}) 不一致",
         )
     return x[_build_idx(ndim, dims)]
@@ -310,7 +310,7 @@ def Expand_Dims(dims: int | Sequence[int], ndim: int | None = None) -> BaseTenso
         if ndim is not None:
             d = dims[0]
             _assert(
-                -(ndim + 1) <= d <= ndim,
+                lambda: -(ndim + 1) <= d <= ndim,
                 f"维度 {d} 越界（插入后维度数 {ndim + 1}，合法范围 [-{ndim + 1}, {ndim}]）",
             )
         return Unsqueeze(dims[0])

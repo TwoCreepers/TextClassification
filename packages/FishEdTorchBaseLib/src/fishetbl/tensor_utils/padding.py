@@ -39,11 +39,11 @@ def _build_pad_sequence(ndim: int, dims: Sequence[int], pad: Sequence[int]):
     pad_map = {}
     for i, d in enumerate(dims):
         _assert(
-            -ndim <= d < ndim,
+            lambda: -ndim <= d < ndim,
             f"维度 {d} 越界（张量维度数 {ndim}，合法范围 [-{ndim}, {ndim - 1}]）",
         )
         dn = d % ndim
-        _assert(dn not in pad_map, f"重复的维度: {d}")
+        _assert(lambda: dn not in pad_map, f"重复的维度: {d}")
         pad_map[dn] = (pad[2 * i], pad[2 * i + 1])
 
     # 从最后一维往前逐维展开；F.pad 的语义就是从末维开始应用
@@ -110,7 +110,7 @@ def _compute_pad_pairs(
     align: PadAlign,
 ) -> list[tuple[int, int]]:
     _assert(
-        len(cur_shape) == len(target_shape),
+        lambda: len(cur_shape) == len(target_shape),
         f"shape 长度 ({len(target_shape)}) 必须与张量维度数 ({len(cur_shape)}) 一致",
     )
     pairs: list[tuple[int, int]] = []
@@ -118,11 +118,13 @@ def _compute_pad_pairs(
         if t is None or t == -1:
             pairs.append((0, 0))
             continue
+        # 绑定到新变量：``t`` 是循环变量，类型窄化（已排除 None）不会带进 lambda。
+        target = t
         _assert(
-            t >= 0,
-            f"第 {i} 维目标大小必须 >= 0（-1/None 表示不变），但得到 {t}",
+            lambda: target >= 0,
+            f"第 {i} 维目标大小必须 >= 0（-1/None 表示不变），但得到 {target}",
         )
-        pairs.append(_split_pad(t - c, align))
+        pairs.append(_split_pad(target - c, align))
     return pairs
 
 
@@ -177,7 +179,7 @@ def pad(
     """
     dims = (dims,) if isinstance(dims, int) else dims
     _assert(
-        len(pad) == 2 * len(dims),
+        lambda: len(pad) == 2 * len(dims),
         f"pad 长度必须为 dims 长度的两倍, 但得到 len(pad)={len(pad)}, len(dims)={len(dims)}",
     )
     if not dims:
@@ -186,10 +188,10 @@ def pad(
         ndim = x.ndim
     else:
         _assert(
-            ndim == x.ndim,
+            lambda: ndim == x.ndim,
             f"显式 ndim ({ndim}) 与输入张量维度 ({x.ndim}) 不一致",
         )
-    _assert(x.ndim > 0, "输入张量必须至少 1 维")
+    _assert(lambda: x.ndim > 0, "输入张量必须至少 1 维")
     pad_seq = _build_pad_sequence(ndim, dims, pad)
     return torch_pad(x, pad=pad_seq, mode=pad_mode, value=value)
 
@@ -295,7 +297,7 @@ def Pad(
     """
     dims = (dims,) if isinstance(dims, int) else dims
     _assert(
-        len(pad) == 2 * len(dims),
+        lambda: len(pad) == 2 * len(dims),
         f"pad 长度必须为 dims 长度的两倍, 但得到 len(pad)={len(pad)}, len(dims)={len(dims)}",
     )
     if not dims:
@@ -303,7 +305,7 @@ def Pad(
     if ndim is None:
         return _Pad_Not_Known_Ndim(pad, dims, pad_mode, value)
     else:
-        _assert(ndim > 0, "ndim 必须为正整数")
+        _assert(lambda: ndim > 0, "ndim 必须为正整数")
         pad_seq = _build_pad_sequence(ndim, dims, pad)
         return Padding(pad_seq, pad_mode, value)
 
@@ -495,7 +497,7 @@ def pad_align(
     dims = (dims,) if isinstance(dims, int) else tuple(dims)
     frame_lens = (frame_lens,) if isinstance(frame_lens, int) else tuple(frame_lens)
     _assert(
-        len(dims) == len(frame_lens),
+        lambda: len(dims) == len(frame_lens),
         f"frame_lens 长度 ({len(frame_lens)}) 必须与 dims 长度 ({len(dims)}) 一致",
     )
 
@@ -503,17 +505,17 @@ def pad_align(
     dn_list: list[int] = []
     for d in dims:
         _assert(
-            -x.ndim <= d < x.ndim,
+            lambda: -x.ndim <= d < x.ndim,
             f"维度 {d} 越界（张量维度数 {x.ndim}，合法范围 [-{x.ndim}, {x.ndim - 1}]）",
         )
         dn = d % x.ndim
-        _assert(dn not in dn_list, f"重复的维度: {d}")
+        _assert(lambda: dn not in dn_list, f"重复的维度: {d}")
         dn_list.append(dn)
 
     flat_pad: list[int] = []
     any_pad = False
     for dn, fl in zip(dn_list, frame_lens):
-        _assert(fl > 0, f"frame_len 必须为正整数, 但得到 {fl}")
+        _assert(lambda: fl > 0, f"frame_len 必须为正整数, 但得到 {fl}")
         size = x.shape[dn]
         total = (-size) % fl
         before, after = _split_pad(total, align)

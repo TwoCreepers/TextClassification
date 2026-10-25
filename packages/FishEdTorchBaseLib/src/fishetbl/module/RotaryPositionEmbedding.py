@@ -48,7 +48,7 @@ class RotaryPositionEmbedding(BaseTensorModule):
         * 增量推理时可传 ``offset``（KV cache 长度）或 ``position_ids``。
         * 参数校验统一走 :func:`fishetbl.utils._assert._assert`，可用
           ``_assert_mode("disable")`` 关闭，或由 ``_set_mode`` 全局调整；
-          ONNX 导出期间断言会自动跳过。
+          ``torch.compile`` trace 期间断言会自动跳过。
     """
 
     # 显式声明 buffer 类型，避免类型检查器把 register_buffer 的字段推断成 Module。
@@ -97,16 +97,18 @@ class RotaryPositionEmbedding(BaseTensorModule):
         Raises:
             AssertionError: 最后一维与 ``head_dim`` 不一致，或 ``position_ids``
                 形状不是 ``(T,)``。校验通过 :func:`fishetbl.utils._assert._assert`
-                完成，可用 ``_assert_mode("disable")`` 关闭（ONNX 导出时也会跳过）。
+                完成，可用 ``_assert_mode("disable")`` 关闭（``torch.compile`` trace 时也会跳过）。
         """
         _assert(
-            x.shape[-1] == self.head_dim,
-            f"输入最后一维应为 head_dim={self.head_dim}，收到 {x.shape[-1]}。",
+            lambda: x.shape[-1] == self.head_dim,
+            "输入最后一维应为 head_dim，收到",
+            x.shape[-1],
         )
         if position_ids is not None:
             _assert(
-                position_ids.ndim == 1,
-                f"position_ids 形状应为 (T,)，收到 {tuple(position_ids.shape)}。",
+                lambda: position_ids.ndim == 1,
+                "position_ids 形状应为 (T,)，收到",
+                position_ids.shape,
             )
 
         cos, sin = self._cos_sin(x.shape[-2], offset, position_ids)
