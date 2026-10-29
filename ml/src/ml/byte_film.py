@@ -5,10 +5,13 @@
 1. 静态记忆：byte 嵌入 -> ``mlp`` -> **仅 K** 加 RoPE，V 不过；
 2. 初始聚合：可学习 latent query 对 ``(K, V)`` 做注意力，得到 ``(B, n_q*d_v, 1)``；
 3. T 轮：若干 dense block 纯 cat 增宽 -> 生成 ``Q`` +（可选）FiLM 调制 V + 逐位置 ``v_mix``
-   -> 注意力输出再 cat 回特征，宽度只增不减；
+   -> 注意力输出再 cat 回特征，宽度只增不减；每 ``compress_every_rounds`` 轮把主干宽度压到
+   当前的 ``1 / compress_denominator``；
 4. 分类头：``RMSNorm`` + ``1x1 Conv``。
 
-宽度：``d0 = n_q * d_v``，``d_final = d0 + rounds * (blocks_per_round * d_block + n_q * d_v)``。
+宽度：``d0 = n_q * d_v``，每轮增宽 ``blocks_per_round * d_block + n_q * d_v``，
+压缩点上除以 ``compress_denominator``（下限 ``d0``，最后一轮之后不压），压缩后的实际宽度
+作为 ``d_final``。
 
 Note:
     通道映射统一用 ``MlpNormAct1d(mapper_type="linear")``（``nn.Linear`` 而非 1x1
@@ -64,6 +67,18 @@ def dense_block(width_in: int, width_out: int) -> NormAct:
         act="gelu",
         post_process=NormAct.ConcatenatePostModule,
         post_process_pos="finally",
+        mapper_type="linear",
+    )
+
+
+def compress_block(width_in: int, width_out: int) -> NormAct:
+    """宽度压缩：``RMSNorm -> ChannelLinear``（无激活），把主干通道数压到 ``width_out``。"""
+    return MlpNormAct1d(
+        widths=(width_in, width_out),
+        norm="rms",
+        norm_pos="before map",
+        act=None,
+        post_process=NormAct.IdentityPostModule,
         mapper_type="linear",
     )
 
@@ -130,11 +145,29 @@ class ByteFiLMDenseNet(BaseTensorModule):
         self.attn = TokenAttention(arch.n_q, arch.d_k, arch.d_v, dropout=arch.attention_dropout)
 
         width = arch.n_q * arch.d_v
-        iterations = nn.ModuleList()
-        for _ in range(arch.rounds):
+        min_width = width  # 压缩下限：初始宽度，避免轮数多时塌缩得过窄
+        if arch.compress_every_rounds > 0 and arch.compress_denominator < 2:
+            raise ValueError(
+                f"[arch] compress_denominator={arch.compress_denominator} 必须 >= 2 "
+                f"（compress_every_rounds={arch.compress_every_rounds}）"
+            )
+        iterations: list[nn.Module] = []
+        # 与 iterations 一一对齐：压缩点放压缩层，否则放 Identity 占位。
+        compressions: list[nn.Module] = []
+        growth = arch.blocks_per_round * arch.d_block + arch.n_q * arch.d_v
+        every = arch.compress_every_rounds
+        for round_idx in range(1, arch.rounds + 1):
             iterations.append(_Iteration(width, arch))
-            width += arch.blocks_per_round * arch.d_block + arch.n_q * arch.d_v
-        self.iterations = iterations
+            width += growth
+            compressions.append(nn.Identity())
+            # 每 compress_every_rounds 轮压缩一次，最后一次之后不压（压完直接进 head）。
+            if every > 0 and round_idx % every == 0 and round_idx < arch.rounds:
+                target = max(min_width, width // arch.compress_denominator)
+                if target < width:
+                    compressions[-1] = compress_block(width, target)
+                    width = target
+        self.iterations = nn.ModuleList(iterations)
+        self.compressions = nn.ModuleList(compressions)
         self.d_final = width
 
         self.head_norm = ChannelRmsNorm(self.d_final)
@@ -156,6 +189,6 @@ class ByteFiLMDenseNet(BaseTensorModule):
 
         query = self.latent_q.expand(input_ids.shape[0], -1, -1)  # (B, n_q*d_k, 1)
         x = self.attn(query, k, v_base, padding_mask)
-        for iteration in self.iterations:
-            x = iteration(x, k, v_base, padding_mask)
+        for iteration, compress in zip(self.iterations, self.compressions, strict=True):
+            x = compress(iteration(x, k, v_base, padding_mask))
         return self.head(self.head_norm(x)).squeeze(-1)  # (B, num_classes)

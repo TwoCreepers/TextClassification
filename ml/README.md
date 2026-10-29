@@ -68,10 +68,12 @@ data/processed/THUCNews/
 2. 可学习 latent query 对 `(K, V)` 做注意力，得到 `(B, n_q*d_v, 1)` 的单 token 特征；
 3. T 轮：`m` 个 dense block 纯 cat 增宽 → 用当前特征生成 Q、FiLM 调制 V、逐位置 `v_mix`
    → 注意力输出再 cat 回特征，宽度只增不减；`[arch] modulate_v = false` 时跳过 FiLM 与
-   `v_mix`，每轮直接复用静态 V；
+   `v_mix`，每轮直接复用静态 V。每 `compress_every_rounds` 轮用 `RMSNorm + ChannelLinear`
+   把主干宽度压到当前的 `1/compress_denominator`（下限 `n_q*d_v`，最后一轮之后不压）；
 4. 分类头：`RMSNorm + 1x1 Conv`。
 
-宽度为 `d0 = n_q*d_v`、`d_final = d0 + rounds*(m*d_block + n_q*d_v)`，超参都在 `[arch]` 段。
+宽度为 `d0 = n_q*d_v`，每轮增宽 `m*d_block + n_q*d_v`，压缩点上除以 `compress_denominator`，
+压缩后的实际宽度即 `d_final`；超参都在 `[arch]` 段。
 
 ## 约定
 

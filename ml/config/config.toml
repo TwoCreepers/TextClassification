@@ -27,18 +27,22 @@ bias = true
 use_padding_mask = true
 
 [arch]
-d_k = 64
-d_v = 64
+d_k = 32
+d_v = 32
 # mlp_k / mlp_v 的中间隐藏层宽度数组：如 [64, 128] 表示 d -> 64 -> 128 -> d；
 # 空数组 [] 表示不加隐藏层（保持单层 d -> d）。
-mlp_hidden = [128]
+mlp_hidden = [64]
 # 是否调制 V：true 时每轮 FiLM 调制 V 再逐位置 v_mix；false 则每轮直接复用静态 V
 # （省掉每轮 film / v_mix 的参数）。
 modulate_v = false
 n_q = 16
-d_block = 512
+d_block = 256
 blocks_per_round = 2
-rounds = 3
+rounds = 4
+# 宽度压缩：每 compress_every_rounds 轮把主干宽度压到当前的 1/compress_denominator。
+# 0 表示不压缩；目标宽度下限是 n_q*d_v，且最后一轮之后不压缩。
+compress_every_rounds = 0
+compress_denominator = 2
 attention_dropout = 0.1
 # FiLM 初始化为恒等调制（gamma=1, beta=0）。
 film_identity_init = true

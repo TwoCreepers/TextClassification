@@ -72,6 +72,12 @@ class ArchConfig:
     # 是否调制 V：True 时每轮用 FiLM 按当前特征调制静态 V 再逐位置 v_mix，
     # False 时每轮直接复用未调制的 V（省掉 film / v_mix 两组参数）。
     modulate_v: bool = True
+    # 宽度压缩：每 ``compress_every_rounds`` 轮把主干宽度压到当前的
+    # ``1 / compress_denominator``；``compress_every_rounds = 0`` 表示不压缩。
+    # 目标宽度下限是 ``n_q * d_v``（初始宽度），避免轮数多时塌缩得过窄；
+    # 最后一轮之后不压缩（压完直接进分类头，没有收益）。
+    compress_every_rounds: int = 0
+    compress_denominator: int = 2
     n_q: int = 16
     d_block: int = 768
     blocks_per_round: int = 2
