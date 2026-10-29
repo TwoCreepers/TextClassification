@@ -13,7 +13,7 @@ max_length = 512 # 每篇最多保留的 UTF-8 字节数
 # 改成 false 则按 batch 内最长序列补齐（变长），torch.compile 会自动改用动态形状。
 pad_to_max_length = false
 batch_size = 128
-num_workers = 2
+num_workers = 0
 
 [model]
 # 架构：first_token（基线，只看第一个 token）或 byte_film（ByteFiLM-DenseNet）。
@@ -27,16 +27,16 @@ bias = true
 use_padding_mask = true
 
 [arch]
-d_k = 32
-d_v = 32
+d_k = 64
+d_v = 64
 # mlp_k / mlp_v 的中间隐藏层宽度数组：如 [64, 128] 表示 d -> 64 -> 128 -> d；
 # 空数组 [] 表示不加隐藏层（保持单层 d -> d）。
-mlp_hidden = [64]
+mlp_hidden = [128]
 # 是否调制 V：true 时每轮 FiLM 调制 V 再逐位置 v_mix；false 则每轮直接复用静态 V
 # （省掉每轮 film / v_mix 的参数）。
 modulate_v = false
 n_q = 16
-d_block = 256
+d_block = 512
 blocks_per_round = 2
 rounds = 3
 attention_dropout = 0.1
@@ -74,6 +74,9 @@ accelerator = "auto"
 devices = 1
 # precision = "32-true"
 precision = "bf16-mixed"
+# torch.set_float32_matmul_precision（进程级全局设置）：high 让 fp32 矩阵乘走 TF32
+#（Ampere+ 明显更快），highest 保持严格 fp32，medium 用 bf16 双乘更激进；仅 CUDA 生效。
+float32_matmul_precision = "high"
 log_every_n_steps = 50
 limit_train_batches = 1.0
 limit_val_batches = 1.0

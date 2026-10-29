@@ -22,6 +22,9 @@ type PrecisionType = Literal[
     "bf16",
 ]
 
+# torch.set_float32_matmul_precision 接受的取值。
+type Float32MatmulPrecisionType = Literal["highest", "high", "medium"]
+
 
 @dataclass(frozen=True)
 class DataConfig:
@@ -128,6 +131,10 @@ class TrainerConfig:
     accelerator: str = "auto"
     devices: int = 1
     precision: PrecisionType = "32-true"
+    # torch.set_float32_matmul_precision 的取值（进程级全局设置，不是 Trainer 参数）：
+    # high 让 fp32 矩阵乘走 TF32（Ampere+ 明显更快），highest 保持严格 fp32，
+    # medium 更激进（bf16 双乘）。仅在 CUDA 上有效果。
+    float32_matmul_precision: Float32MatmulPrecisionType = "high"
     log_every_n_steps: int = 50
     limit_train_batches: float = 1.0
     limit_val_batches: float = 1.0

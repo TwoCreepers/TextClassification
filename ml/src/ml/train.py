@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 import pytorch_lightning as pl
+import torch
 from pytorch_lightning.callbacks import ModelCheckpoint
 from pytorch_lightning.loggers import TensorBoardLogger
 
@@ -95,6 +96,8 @@ def train(argv: list[str] | None = None) -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     pl.seed_everything(cfg.trainer.seed, workers=True)
     configure_compilation(cfg.compile)
+    # 进程级全局设置，要在建模型/跑图之前设好；CUDA 上才会真正切到 TF32。
+    torch.set_float32_matmul_precision(cfg.trainer.float32_matmul_precision)
     LOGGER.info("配置: %s", cfg)
 
     datamodule = build_datamodule(cfg)
