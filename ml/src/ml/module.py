@@ -2,8 +2,10 @@
 
 import pytorch_lightning as pl
 import torch
+from pytorch_lightning.utilities.types import OptimizerLRScheduler
 from torch import Tensor, nn, optim
-from torchmetrics.classification import MulticlassF1Score
+from torch.optim import lr_scheduler
+from torchmetrics.classification import MulticlassAccuracy, MulticlassF1Score
 
 from .config import Config
 from .data import PAD_TOKEN_ID
@@ -14,7 +16,7 @@ class ByteClassifierModule(pl.LightningModule):
 
     训练步只返回 loss、不做任何日志操作（日志由 :class:`ml.callbacks.LossLoggingCallback`
     在 step 之外完成），这样 ``torch.compile(fullgraph=True)`` 的前反向图不会被日志打断。
-    F1 只在验证集与测试集上计算。
+    F1 与 top1 准确率只在验证集与测试集上计算。
 
     Args:
         model: 主模型，``forward(input_ids, padding_mask=None) -> logits``。
@@ -25,10 +27,14 @@ class ByteClassifierModule(pl.LightningModule):
         super().__init__()
         self.model = model
         self.cfg = cfg
-        self.criterion = nn.CrossEntropyLoss()
+        # 标签平滑由 [optim] label_smoothing 控制；0.0 时与普通交叉熵完全等价。
+        self.criterion = nn.CrossEntropyLoss(label_smoothing=cfg.optim.label_smoothing)
         num_classes = cfg.model.num_classes
         self.val_f1 = MulticlassF1Score(num_classes=num_classes, average="macro")
         self.test_f1 = MulticlassF1Score(num_classes=num_classes, average="macro")
+        # top1 准确率：argmax 命中即为对，micro 平均下就是整体正确率。
+        self.val_top1 = MulticlassAccuracy(num_classes=num_classes, top_k=1, average="micro")
+        self.test_top1 = MulticlassAccuracy(num_classes=num_classes, top_k=1, average="micro")
         self._compiled_forward = (
             # 动态形状跟着补齐方式走：变长补齐必须开（否则每个新 (B, L) 都会重编译，
             # fullgraph=True 下还会撞 recompile_limit 直接失败）；固定补齐保持静态最快。
@@ -54,44 +60,98 @@ class ByteClassifierModule(pl.LightningModule):
         return input_ids != PAD_TOKEN_ID
 
     def training_step(self, batch: dict[str, Tensor], batch_idx: int) -> Tensor:
-        """只计算并返回 loss；记录交给 LossLoggingCallback。"""
         logits = self(batch["input_ids"], self._padding_mask(batch["input_ids"]))
-        return self.criterion(logits, batch["labels"])
+        loss = self.criterion(logits, batch["labels"])
+        self.log("train/loss", loss, on_step=False, on_epoch=True, prog_bar=True, logger=True)
+        return loss
 
     def validation_step(self, batch: dict[str, Tensor], batch_idx: int) -> Tensor:
         logits = self(batch["input_ids"], self._padding_mask(batch["input_ids"]))
         labels = batch["labels"]
         loss = self.criterion(logits, labels)
-        self.val_f1.update(logits.argmax(dim=-1), labels)
+        preds = logits.argmax(dim=-1)
+        self.val_f1.update(preds, labels)
+        self.val_top1.update(preds, labels)
         self.log("val/loss", loss, on_step=False, on_epoch=True, prog_bar=True)
         return loss
 
     def on_validation_epoch_end(self) -> None:
         self.log("val/f1", self.val_f1.compute(), on_step=False, on_epoch=True, prog_bar=True)
+        self.log(
+            "val/top1_acc",
+            self.val_top1.compute(),
+            on_step=False,
+            on_epoch=True,
+            prog_bar=True,
+        )
         self.val_f1.reset()
+        self.val_top1.reset()
 
     def test_step(self, batch: dict[str, Tensor], batch_idx: int) -> Tensor:
         logits = self(batch["input_ids"], self._padding_mask(batch["input_ids"]))
         labels = batch["labels"]
         loss = self.criterion(logits, labels)
-        self.test_f1.update(logits.argmax(dim=-1), labels)
+        preds = logits.argmax(dim=-1)
+        self.test_f1.update(preds, labels)
+        self.test_top1.update(preds, labels)
         self.log("test/loss", loss, on_step=False, on_epoch=True, prog_bar=True)
         return loss
 
     def on_test_epoch_end(self) -> None:
         self.log("test/f1", self.test_f1.compute(), on_step=False, on_epoch=True, prog_bar=True)
+        self.log(
+            "test/top1_acc",
+            self.test_top1.compute(),
+            on_step=False,
+            on_epoch=True,
+            prog_bar=True,
+        )
         self.test_f1.reset()
+        self.test_top1.reset()
 
-    def configure_optimizers(self) -> optim.Optimizer:
+    def configure_optimizers(self) -> OptimizerLRScheduler:
         """AdamW；在 CUDA 上用融合 kernel（CPU 不支持，自动回退）。
 
         36.2M 参数的 byte_film 上实测 ``optimizer.step()``：默认实现 16.6 ms/step，
         ``fused=True`` 5.8 ms/step —— 单个 step 的 20%~40% 花在这里。
+
+        调度由 ``[scheduler] name`` 决定：``none`` 只返回优化器；``cosine`` 额外返回
+        ``CosineAnnealingLR``（可带线性 warmup），周期按 ``max_epochs - warmup_epochs`` 个
+        epoch 算，每个 epoch 更新一次。
         """
         parameters = list(self.parameters())
-        return optim.AdamW(
+        optimizer = optim.AdamW(
             parameters,
             lr=self.cfg.optim.lr,
             weight_decay=self.cfg.optim.weight_decay,
             fused=bool(parameters) and parameters[0].is_cuda,
         )
+        sched = self.cfg.scheduler
+        if sched.name == "none":
+            return optimizer
+
+        # 余弦要吃掉 warmup 之后剩下的 epoch；max_epochs <= 0（无限）时无法确定周期。
+        cosine_epochs = self.cfg.trainer.max_epochs - sched.warmup_epochs
+        if cosine_epochs <= 0:
+            raise ValueError(
+                f"[scheduler] warmup_epochs={sched.warmup_epochs} 必须小于 "
+                f"[trainer] max_epochs={self.cfg.trainer.max_epochs} 才能排余弦周期"
+            )
+        cosine = lr_scheduler.CosineAnnealingLR(optimizer, T_max=cosine_epochs, eta_min=sched.min_lr)
+        if sched.warmup_epochs <= 0:
+            scheduler: lr_scheduler.LRScheduler = cosine
+        else:
+            warmup = lr_scheduler.LinearLR(
+                optimizer,
+                start_factor=sched.warmup_start_factor,
+                total_iters=sched.warmup_epochs,
+            )
+            scheduler = lr_scheduler.SequentialLR(
+                optimizer,
+                schedulers=[warmup, cosine],
+                milestones=[sched.warmup_epochs],
+            )
+        return {
+            "optimizer": optimizer,
+            "lr_scheduler": {"scheduler": scheduler, "interval": "epoch", "frequency": 1},
+        }

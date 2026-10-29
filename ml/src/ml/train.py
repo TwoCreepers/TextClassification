@@ -13,7 +13,6 @@ from pytorch_lightning.loggers import TensorBoardLogger
 from fishetbl.base.BaseModule import BaseTensorModule
 
 from .byte_film import ByteFiLMDenseNet
-from .callbacks import LossLoggingCallback
 from .compilation import configure_compilation
 from .config import Config, load_config
 from .data import ByteClassificationDataModule
@@ -82,7 +81,6 @@ def build_trainer(cfg: Config) -> pl.Trainer:
         logger=build_logger(cfg),
         callbacks=[
             ModelCheckpoint(monitor="val/f1", mode="max", save_top_k=1, filename="best"),
-            LossLoggingCallback(),
         ],
     )
 

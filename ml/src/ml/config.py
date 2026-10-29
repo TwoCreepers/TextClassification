@@ -1,6 +1,7 @@
 """ml 项目的配置结构：全部来自 ``ml/config/config.toml``。"""
 
 import tomllib
+from collections.abc import Sequence
 from dataclasses import dataclass, fields
 from pathlib import Path
 from typing import Any, Literal
@@ -24,15 +25,15 @@ type PrecisionType = Literal[
 
 @dataclass(frozen=True)
 class DataConfig:
-    """数据集与 DataLoader 配置。"""
+    """数据集与 DataLoader 配置。
 
-    dataset_name: str = "seamew/THUCNews"
-    # datasets 5.x 已不再支持 dataset script，THUCNews 需要读取 Hub 自动转换的 parquet 分支。
-    revision: str | None = "refs/convert/parquet"
-    text_column: str = "text"
-    label_column: str = "label"
+    数据来自 ``uv run ml-prepare-thucnews`` 生成的顺序字节 pack：根目录下需要有
+    ``dataset_info.json`` 和 ``packs/{split}.bin`` + ``.offsets.npy`` + ``.labels.npy``。
+    """
+
+    root: str = "data/processed/THUCNews"
     train_split: str = "train"
-    val_split: str = "validation"
+    val_split: str = "val"
     test_split: str = "test"
     max_length: int = 512
     # 固定补齐到 max_length：batch 形状恒定，torch.compile 无需动态形状、只需编译一次。
@@ -51,7 +52,7 @@ class ModelConfig:
 
     arch: ModelArchType = "first_token"
     vocab_size: int = 256
-    num_classes: int = 10
+    num_classes: int = 14
     bias: bool = True
     use_padding_mask: bool = True
 
@@ -62,6 +63,12 @@ class ArchConfig:
 
     d_k: int = 64
     d_v: int = 64
+    # mlp_k / mlp_v 的中间隐藏层宽度数组：``(64, 128)`` 表示 d -> 64 -> 128 -> d；
+    # 空数组表示不加隐藏层（单层 d -> d，默认）。
+    mlp_hidden: Sequence[int] = ()
+    # 是否调制 V：True 时每轮用 FiLM 按当前特征调制静态 V 再逐位置 v_mix，
+    # False 时每轮直接复用未调制的 V（省掉 film / v_mix 两组参数）。
+    modulate_v: bool = True
     n_q: int = 16
     d_block: int = 768
     blocks_per_round: int = 2
@@ -72,10 +79,35 @@ class ArchConfig:
 
 @dataclass(frozen=True)
 class OptimConfig:
-    """优化器配置。"""
+    """优化器与损失函数配置。"""
 
     lr: float = 1e-3
     weight_decay: float = 0.0
+    # 标签平滑强度：one-hot 目标变成 (1 - eps) / eps 在真实类与其余类之间的软目标，
+    # 直接透传给 nn.CrossEntropyLoss(label_smoothing=...)。0.0 即关闭（纯 one-hot）。
+    # 合理量级 0.05 ~ 0.1；超过 0 后训练 loss 下界抬高，绝对值不能和历史曲线直接对比。
+    label_smoothing: float = 0.0
+
+
+type SchedulerType = Literal["none", "cosine"]
+
+
+@dataclass(frozen=True)
+class SchedulerConfig:
+    """学习率调度配置；按 epoch 更新（配合 ``[trainer] max_epochs``）。
+
+    ``cosine`` 用的是 :class:`torch.optim.lr_scheduler.CosineAnnealingLR`，从当前 lr
+    余弦降到 ``min_lr``；可选的线性 warmup 由 :class:`~torch.optim.lr_scheduler.SequentialLR`
+    拼在余弦前面。余弦周期按 epoch 数算：``max_epochs - warmup_epochs``。
+    """
+
+    name: SchedulerType = "none"
+    # 线性 warmup 的 epoch 数（0 表示不 warmup）。
+    warmup_epochs: int = 0
+    # warmup 起始学习率 = lr * warmup_start_factor，线性升到 lr 后交给余弦。
+    warmup_start_factor: float = 0.1
+    # 余弦终点学习率（绝对值的 eta_min）。
+    min_lr: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -124,6 +156,7 @@ class Config:
     model: ModelConfig
     arch: ArchConfig
     optim: OptimConfig
+    scheduler: SchedulerConfig
     logger: LoggerConfig
     trainer: TrainerConfig
     compile: CompileConfig
@@ -147,6 +180,7 @@ def load_config(path: str | Path) -> Config:
         model=_build(ModelConfig, raw, "model"),
         arch=_build(ArchConfig, raw, "arch"),
         optim=_build(OptimConfig, raw, "optim"),
+        scheduler=_build(SchedulerConfig, raw, "scheduler"),
         logger=_build(LoggerConfig, raw, "logger"),
         trainer=_build(TrainerConfig, raw, "trainer"),
         compile=_build(CompileConfig, raw, "compile"),

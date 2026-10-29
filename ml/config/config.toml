@@ -2,19 +2,17 @@
 # 所有字段都可省略，省略时回落到 ml/src/ml/config.py 里的 dataclass 默认值。
 
 [data]
-dataset_name = "seamew/THUCNews"
-# datasets 5.x 不再支持 dataset script，这里读取 Hub 自动转换的 parquet 分支。
-revision = "refs/convert/parquet"
-text_column = "text"
-label_column = "label"
+# 预处理产物（uv run ml-prepare-thucnews）所在的根目录：
+# root/dataset_info.json + root/packs/{split}.bin|.offsets.npy|.labels.npy。
+root = "data/processed/THUCNews"
 train_split = "train"
-val_split = "validation"
+val_split = "val"
 test_split = "test"
-max_length = 512 # 仅 pad_to_max_length=true 时生效
+max_length = 512 # 每篇最多保留的 UTF-8 字节数
 # 固定补齐到 max_length：batch 形状恒定，torch.compile 用静态形状只需编译一次；
 # 改成 false 则按 batch 内最长序列补齐（变长），torch.compile 会自动改用动态形状。
 pad_to_max_length = false
-batch_size = 64
+batch_size = 128
 num_workers = 2
 
 [model]
@@ -22,25 +20,46 @@ num_workers = 2
 arch = "byte_film"
 # byte 词表：token id 即字节值，0 号兼作 padding。
 vocab_size = 256
-num_classes = 10
+# THUCNews 共 14 个分类（财经/彩票/房产/...），类别数由数据的分类目录决定。
+num_classes = 14
 bias = true
 # 是否把 padding 位置挡在 attention 之外（变长文本必须开）。
 use_padding_mask = true
 
 [arch]
-d_k = 64
-d_v = 64
+d_k = 32
+d_v = 32
+# mlp_k / mlp_v 的中间隐藏层宽度数组：如 [64, 128] 表示 d -> 64 -> 128 -> d；
+# 空数组 [] 表示不加隐藏层（保持单层 d -> d）。
+mlp_hidden = [64]
+# 是否调制 V：true 时每轮 FiLM 调制 V 再逐位置 v_mix；false 则每轮直接复用静态 V
+# （省掉每轮 film / v_mix 的参数）。
+modulate_v = false
 n_q = 16
-d_block = 768
+d_block = 256
 blocks_per_round = 2
 rounds = 3
-attention_dropout = 0.0
+attention_dropout = 0.1
 # FiLM 初始化为恒等调制（gamma=1, beta=0）。
 film_identity_init = true
 
 [optim]
 lr = 0.001
-weight_decay = 1e-5
+weight_decay = 1e-1
+# 标签平滑（nn.CrossEntropyLoss 的 label_smoothing）：0.0 关闭；常用 0.05 ~ 0.1。
+# 打开后训练/验证 loss 的下界会抬高，不能和之前的曲线直接比数值。
+label_smoothing = 0.1
+
+[scheduler]
+# 学习率调度：none（lr 恒定）或 cosine（余弦退火到 min_lr）。
+name = "cosine"
+# 前 warmup_epochs 个 epoch 线性升到 lr，之后再走余弦；0 表示不 warmup。
+# 余弦周期 = max_epochs - warmup_epochs，必须小于 [trainer] max_epochs。
+warmup_epochs = 5
+# warmup 起点 lr = lr * warmup_start_factor。
+warmup_start_factor = 0.1
+# 余弦终点学习率（退火的最小值）。
+min_lr = 1e-6
 
 [logger]
 # TensorBoard：日志与 checkpoint 都在 save_dir/name/version_* 下。
@@ -50,7 +69,7 @@ log_graph = false
 
 [trainer]
 seed = 42
-max_epochs = 50
+max_epochs = 100
 accelerator = "auto"
 devices = 1
 # precision = "32-true"

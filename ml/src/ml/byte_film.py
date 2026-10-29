@@ -4,7 +4,7 @@
 
 1. 静态记忆：byte 嵌入 -> ``mlp`` -> **仅 K** 加 RoPE，V 不过；
 2. 初始聚合：可学习 latent query 对 ``(K, V)`` 做注意力，得到 ``(B, n_q*d_v, 1)``；
-3. T 轮：若干 dense block 纯 cat 增宽 -> 生成 ``Q`` + FiLM 调制 V + 逐位置 ``v_mix``
+3. T 轮：若干 dense block 纯 cat 增宽 -> 生成 ``Q`` +（可选）FiLM 调制 V + 逐位置 ``v_mix``
    -> 注意力输出再 cat 回特征，宽度只增不减；
 4. 分类头：``RMSNorm`` + ``1x1 Conv``。
 
@@ -16,6 +16,8 @@ Note:
     具体值，导致变长 padding 时每个新长度都重编译（``fullgraph=True`` 下还会撞
     ``recompile_limit`` 直接失败）；matmul 没有这个限制。
 """
+
+from collections.abc import Sequence
 
 from einops import rearrange
 from torch import Tensor, cat, empty, nn
@@ -35,10 +37,18 @@ from fishetbl.module import (
 from .config import ArchConfig
 
 
-def mlp(width_in: int, width_out: int) -> NormAct:
-    """逐位置的 ``RMSNorm -> MLP(GELU)``（不做残差 / 拼接）。"""
+def mlp(width_in: int, width_out: int, hidden: Sequence[int] = ()) -> NormAct:
+    """逐位置的 ``RMSNorm -> MLP(GELU)``（不做残差 / 拼接）。
+
+    Args:
+        width_in: 输入通道数。
+        width_out: 输出通道数。
+        hidden: 中间隐藏层宽度数组；``(64, 128)`` 表示 ``width_in -> 64 -> 128 ->
+            width_out``，空数组表示直接 ``width_in -> width_out`` 单层。
+    """
+    widths = (width_in, *hidden, width_out)
     return MlpNormAct1d(
-        widths=(width_in, width_out),
+        widths=widths,
         act="gelu",
         post_process=NormAct.IdentityPostModule,
         mapper_type="linear",
@@ -59,7 +69,10 @@ def dense_block(width_in: int, width_out: int) -> NormAct:
 
 
 class _Iteration(nn.Module):
-    """一轮迭代：dense 增宽 -> 生成 Q + FiLM 调制 V -> 注意力回填。"""
+    """一轮迭代：dense 增宽 -> 生成 Q（可选调制 V）-> 注意力回填。
+
+    ``arch.modulate_v`` 为 ``False`` 时不建 ``film`` / ``v_mix``，每轮直接复用静态 V。
+    """
 
     def __init__(self, width_in: int, arch: ArchConfig) -> None:
         super().__init__()
@@ -68,15 +81,22 @@ class _Iteration(nn.Module):
         )
         width_out = width_in + arch.blocks_per_round * arch.d_block
         self.q_gen = mlp(width_out, arch.n_q * arch.d_k)
-        self.film = FiLM(width_out, arch.d_v, identity_init=arch.film_identity_init)
-        self.v_mix = mlp(arch.d_v, arch.d_v)
+        # FiLM 调制 + 逐位置 v_mix：只在 modulate_v 打开时存在。
+        self.film: FiLM | None = None
+        self.v_mix: NormAct | None = None
+        if arch.modulate_v:
+            self.film = FiLM(width_out, arch.d_v, identity_init=arch.film_identity_init)
+            self.v_mix = mlp(arch.d_v, arch.d_v)
         self.attn = TokenAttention(arch.n_q, arch.d_k, arch.d_v, dropout=arch.attention_dropout)
 
     def forward(self, x: Tensor, k: Tensor, v_base: Tensor, padding_mask: Tensor | None) -> Tensor:
         for block in self.blocks:
             x = block(x)
         query = self.q_gen(x)  # (B, n_q*d_k, 1)
-        value = self.v_mix(self.film(v_base, x))  # (B, d_v, L)
+        value = v_base  # 不调制时直接用静态 V
+        film, v_mix = self.film, self.v_mix
+        if film is not None and v_mix is not None:
+            value = v_mix(film(v_base, x))  # (B, d_v, L)
         attended = self.attn(query, k, value, padding_mask)  # (B, n_q*d_v, 1)
         return cat((x, attended), dim=1)
 
@@ -100,8 +120,8 @@ class ByteFiLMDenseNet(BaseTensorModule):
 
         self.embed_k = TokenEmbedding(vocab_size, arch.d_k)
         self.embed_v = TokenEmbedding(vocab_size, arch.d_v)
-        self.mlp_k = mlp(arch.d_k, arch.d_k)
-        self.mlp_v = mlp(arch.d_v, arch.d_v)
+        self.mlp_k = mlp(arch.d_k, arch.d_k, hidden=arch.mlp_hidden)
+        self.mlp_v = mlp(arch.d_v, arch.d_v, hidden=arch.mlp_hidden)
         self.rope = RotaryPositionEmbedding(head_dim=arch.d_k)
 
         self.latent_q = nn.Parameter(empty(1, arch.n_q * arch.d_k, 1))
