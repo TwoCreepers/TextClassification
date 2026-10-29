@@ -77,7 +77,10 @@ class ArchConfig:
     # 目标宽度下限是 ``n_q * d_v``（初始宽度），避免轮数多时塌缩得过窄；
     # 最后一轮之后不压缩（压完直接进分类头，没有收益）。
     compress_every_rounds: int = 0
-    compress_denominator: int = 2
+    # 分母：int 表示所有压缩点都用同一个值；数组则按压缩点出现的顺序依次取用，
+    # 长度必须 >= 压缩点个数（否则构造模型时报错），多出来的元素忽略。
+    # 取值必须 >= 1；为 1 时该压缩点不压，占位成恒等映射。
+    compress_denominator: int | Sequence[int] = 2
     n_q: int = 16
     d_block: int = 768
     blocks_per_round: int = 2

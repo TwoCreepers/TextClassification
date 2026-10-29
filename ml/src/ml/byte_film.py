@@ -83,6 +83,31 @@ def compress_block(width_in: int, width_out: int) -> NormAct:
     )
 
 
+def compression_denominators(arch: ArchConfig) -> list[int]:
+    """把 ``compress_denominator`` 展开成每个压缩点一个分母（按压缩先后顺序）。
+
+    ``int`` 表示所有压缩点共用；数组按顺序取用。压缩点个数由 ``rounds`` 与
+    ``compress_every_rounds`` 决定（最后一次之后不压），数组不够长时报错。
+    分母必须 ``>= 1``；为 ``1`` 时该压缩点不改变宽度，模型里用恒等映射占位。
+    """
+    every = arch.compress_every_rounds
+    if every <= 0:
+        return []
+    count = (arch.rounds - 1) // every
+    spec = arch.compress_denominator
+    values = [spec] * count if isinstance(spec, int) else list(spec)
+    if len(values) < count:
+        raise ValueError(
+            f"[arch] compress_denominator 需要 {count} 个值"
+            f"（rounds={arch.rounds}、compress_every_rounds={every}），"
+            f"实际只给了 {len(values)} 个"
+        )
+    values = values[:count]
+    if any(value < 1 for value in values):
+        raise ValueError(f"[arch] compress_denominator 每个值都必须 >= 1（1 表示该点用恒等映射），收到 {values}")
+    return values
+
+
 class _Iteration(nn.Module):
     """一轮迭代：dense 增宽 -> 生成 Q（可选调制 V）-> 注意力回填。
 
@@ -146,11 +171,7 @@ class ByteFiLMDenseNet(BaseTensorModule):
 
         width = arch.n_q * arch.d_v
         min_width = width  # 压缩下限：初始宽度，避免轮数多时塌缩得过窄
-        if arch.compress_every_rounds > 0 and arch.compress_denominator < 2:
-            raise ValueError(
-                f"[arch] compress_denominator={arch.compress_denominator} 必须 >= 2 "
-                f"（compress_every_rounds={arch.compress_every_rounds}）"
-            )
+        denominators = compression_denominators(arch)
         iterations: list[nn.Module] = []
         # 与 iterations 一一对齐：压缩点放压缩层，否则放 Identity 占位。
         compressions: list[nn.Module] = []
@@ -161,8 +182,10 @@ class ByteFiLMDenseNet(BaseTensorModule):
             width += growth
             compressions.append(nn.Identity())
             # 每 compress_every_rounds 轮压缩一次，最后一次之后不压（压完直接进 head）。
+            # 分母为 1（或被下限夹平）时 target == width，槽位保持 Identity 占位。
             if every > 0 and round_idx % every == 0 and round_idx < arch.rounds:
-                target = max(min_width, width // arch.compress_denominator)
+                denominator = denominators[round_idx // every - 1]
+                target = max(min_width, width // denominator)
                 if target < width:
                     compressions[-1] = compress_block(width, target)
                     width = target

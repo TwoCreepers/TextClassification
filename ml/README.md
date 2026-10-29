@@ -70,6 +70,8 @@ data/processed/THUCNews/
    → 注意力输出再 cat 回特征，宽度只增不减；`[arch] modulate_v = false` 时跳过 FiLM 与
    `v_mix`，每轮直接复用静态 V。每 `compress_every_rounds` 轮用 `RMSNorm + ChannelLinear`
    把主干宽度压到当前的 `1/compress_denominator`（下限 `n_q*d_v`，最后一轮之后不压）；
+   `compress_denominator` 可以是 int（所有压缩点共用）或数组（按压缩点顺序取，如 `[2, 4]`），
+   取值 >= 1，填 `1` 表示该压缩点不压（恒等映射）；
 4. 分类头：`RMSNorm + 1x1 Conv`。
 
 宽度为 `d0 = n_q*d_v`，每轮增宽 `m*d_block + n_q*d_v`，压缩点上除以 `compress_denominator`，

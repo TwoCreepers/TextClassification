@@ -38,10 +38,12 @@ modulate_v = false
 n_q = 16
 d_block = 256
 blocks_per_round = 2
-rounds = 4
+rounds = 6
 # 宽度压缩：每 compress_every_rounds 轮把主干宽度压到当前的 1/compress_denominator。
 # 0 表示不压缩；目标宽度下限是 n_q*d_v，且最后一轮之后不压缩。
-compress_every_rounds = 0
+# denominator 可以是 int（所有压缩点共用）或数组（按压缩点顺序取，如 [2, 4]），
+# 数组长度必须 >= 压缩点个数；取值 >= 1，填 1 表示该点不压缩（恒等映射）。
+compress_every_rounds = 3
 compress_denominator = 2
 attention_dropout = 0.1
 # FiLM 初始化为恒等调制（gamma=1, beta=0）。
