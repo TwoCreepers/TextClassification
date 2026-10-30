@@ -8,7 +8,7 @@ from typing import Any
 
 import pytorch_lightning as pl
 import torch
-from pytorch_lightning.callbacks import ModelCheckpoint
+from pytorch_lightning.callbacks import Callback, EMAWeightAveraging, ModelCheckpoint
 from pytorch_lightning.loggers import TensorBoardLogger
 
 from fishetbl.base.BaseModule import BaseTensorModule
@@ -69,7 +69,13 @@ def _flatten(prefix: str, value: Any) -> dict[str, Any]:
 
 
 def build_trainer(cfg: Config) -> pl.Trainer:
-    """按配置构建 Trainer，并挂上 TensorBoard 日志、loss 回调与按 ``val/f1`` 保存的 checkpoint。"""
+    """按配置构建 Trainer，并挂上 TensorBoard 日志与按 ``val/f1`` 保存的 checkpoint。"""
+    callbacks: list[Callback] = [
+        ModelCheckpoint(monitor="val/f1", mode="max", save_top_k=1, filename="best"),
+    ]
+    if cfg.ema.enabled:
+        # Lightning 自带的 EMA：验证 / 测试会用平均后的权重。
+        callbacks.append(EMAWeightAveraging(decay=cfg.ema.decay, use_buffers=cfg.ema.use_buffers))
     return pl.Trainer(
         max_epochs=cfg.trainer.max_epochs,
         accelerator=cfg.trainer.accelerator,
@@ -80,9 +86,7 @@ def build_trainer(cfg: Config) -> pl.Trainer:
         limit_val_batches=cfg.trainer.limit_val_batches,
         limit_test_batches=cfg.trainer.limit_test_batches,
         logger=build_logger(cfg),
-        callbacks=[
-            ModelCheckpoint(monitor="val/f1", mode="max", save_top_k=1, filename="best"),
-        ],
+        callbacks=callbacks,
     )
 
 

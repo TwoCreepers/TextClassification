@@ -72,10 +72,14 @@ data/processed/THUCNews/
    把主干宽度压到当前的 `1/compress_denominator`（下限 `n_q*d_v`，最后一轮之后不压）；
    `compress_denominator` 可以是 int（所有压缩点共用）或数组（按压缩点顺序取，如 `[2, 4]`），
    取值 >= 1，填 `1` 表示该压缩点不压（恒等映射）；
-4. 分类头：`RMSNorm + 1x1 Conv`。
+4. 分类头：`Dropout + RMSNorm + 1x1 Conv`。
 
 宽度为 `d0 = n_q*d_v`，每轮增宽 `m*d_block + n_q*d_v`，压缩点上除以 `compress_denominator`，
 压缩后的实际宽度即 `d_final`；超参都在 `[arch]` 段。
+
+主干特征在送入 `q_gen`、每个 `dense_block`、`film`（作为条件）以及分类头（`head_norm` 之前）
+之前各有一处 dropout，四处互相独立：`[arch] q_gen_dropout` / `dense_block_dropout` /
+`film_dropout` / `head_dropout`（`0` 表示关闭；`modulate_v = false` 时 `film_dropout` 不生效）。
 
 ## 约定
 
@@ -99,3 +103,5 @@ data/processed/THUCNews/
   deprecated，因此不提供该配置）。每个 split 的 DataLoader 都挂一个显式播种的 `torch.Generator`，
   种子为 `[trainer] seed` 加 split 顺序（train/val/test → +0/+1/+2），
   因此 shuffle 顺序可复现且不消耗全局 RNG。
+- **EMA**：`[ema] enabled` 挂上 Lightning 自带的 `EMAWeightAveraging` callback（`decay` 默认
+  0.999、`use_buffers = false` 只平均参数），验证 / 测试与 checkpoint 都用平均后的权重。

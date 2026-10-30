@@ -12,10 +12,8 @@ max_length = 512 # 每篇最多保留的 UTF-8 字节数，若 pad_to_max_length
 # 固定补齐到 max_length：batch 形状恒定，torch.compile 用静态形状只需编译一次；
 # 改成 false 则按 batch 内最长序列补齐（变长），torch.compile 会自动改用动态形状。
 pad_to_max_length = false
-batch_size = 1536
+batch_size = 1024
 num_workers = 0
-# DataLoader 的 pinned memory（有加速器时 H2D 更快）。
-pin_memory = true
 
 [model]
 # 架构：first_token（基线，只看第一个 token）或 byte_film（ByteFiLM-DenseNet）。
@@ -47,12 +45,21 @@ rounds = 3
 # 数组长度必须 >= 压缩点个数；取值 >= 1，填 1 表示该点不压缩（恒等映射）。
 compress_every_rounds = 0
 compress_denominator = 1
-attention_dropout = 0.2
+# 主干特征的四处 dropout，可分别配置（取值 [0, 1)，0 表示关闭）：
+#   q_gen_dropout       送入 q_gen 之前
+#   dense_block_dropout 送入每个 dense block 之前
+#   film_dropout        作为条件特征送入 FiLM 之前（modulate_v = false 时不生效）
+#   head_dropout        送入分类头之前（head_norm 之前）
+q_gen_dropout = 0.1
+dense_block_dropout = 0.1
+film_dropout = 0.1
+head_dropout = 0.1
+attention_dropout = 0.3
 # FiLM 初始化为恒等调制（gamma=1, beta=0）。
 film_identity_init = true
 
 [optim]
-lr = 4e-3
+lr = 8e-3
 weight_decay = 1e-5
 # 标签平滑（nn.CrossEntropyLoss 的 label_smoothing）：0.0 关闭；常用 0.05 ~ 0.1。
 # 打开后训练/验证 loss 的下界会抬高，不能和之前的曲线直接比数值。
@@ -69,6 +76,15 @@ warmup_start_factor = 0.1
 # 余弦终点学习率（退火的最小值）。
 min_lr = 1e-6
 
+[ema]
+# 启用 Lightning 自带的 EMA 权重平均（EMAWeightAveraging callback）：
+# 验证 / 测试用平均后的权重，checkpoint 里存的也是 EMA 权重。
+enabled = true
+# 每步衰减系数：avg = decay * avg + (1 - decay) * new。
+decay = 0.999
+# false = 只平均参数，不动 buffer（如 BN 的 running stats）。
+use_buffers = false
+
 [logger]
 # TensorBoard：日志与 checkpoint 都在 save_dir/name/version_* 下。
 save_dir = "lightning_logs"
@@ -77,7 +93,7 @@ log_graph = false
 
 [trainer]
 seed = 42
-max_epochs = 50
+max_epochs = 100
 accelerator = "auto"
 devices = 1
 # precision = "32-true"

@@ -87,6 +87,15 @@ class ArchConfig:
     d_block: int = 768
     blocks_per_round: int = 2
     rounds: int = 3
+    # 主干特征的四处 dropout，互相独立（取值 [0, 1)，0 表示关闭）：
+    #   q_gen_dropout       - 送入 q_gen 之前；
+    #   dense_block_dropout - 送入每个 dense block 之前；
+    #   film_dropout        - 作为条件特征送入 FiLM 之前（modulate_v = False 时不生效）；
+    #   head_dropout        - 送入分类头之前（head_norm 之前）。
+    q_gen_dropout: float = 0.0
+    dense_block_dropout: float = 0.0
+    film_dropout: float = 0.0
+    head_dropout: float = 0.0
     attention_dropout: float = 0.0
     film_identity_init: bool = True
 
@@ -122,6 +131,20 @@ class SchedulerConfig:
     warmup_start_factor: float = 0.1
     # 余弦终点学习率（绝对值的 eta_min）。
     min_lr: float = 0.0
+
+
+@dataclass(frozen=True)
+class EMAConfig:
+    """EMA 权重平均配置（Lightning 自带的 ``EMAWeightAveraging`` callback）。
+
+    开启后验证 / 测试用的是平均后的权重，checkpoint 里存的也是 EMA 权重。
+    """
+
+    enabled: bool = False
+    # 每步的衰减系数：``avg = decay * avg + (1 - decay) * new``。
+    decay: float = 0.999
+    # 是否连 buffer（如 BN 的 running stats）一起平均；False 只平均参数。
+    use_buffers: bool = False
 
 
 @dataclass(frozen=True)
@@ -175,6 +198,7 @@ class Config:
     arch: ArchConfig
     optim: OptimConfig
     scheduler: SchedulerConfig
+    ema: EMAConfig
     logger: LoggerConfig
     trainer: TrainerConfig
     compile: CompileConfig
@@ -199,6 +223,7 @@ def load_config(path: str | Path) -> Config:
         arch=_build(ArchConfig, raw, "arch"),
         optim=_build(OptimConfig, raw, "optim"),
         scheduler=_build(SchedulerConfig, raw, "scheduler"),
+        ema=_build(EMAConfig, raw, "ema"),
         logger=_build(LoggerConfig, raw, "logger"),
         trainer=_build(TrainerConfig, raw, "trainer"),
         compile=_build(CompileConfig, raw, "compile"),

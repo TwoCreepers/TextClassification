@@ -7,7 +7,11 @@
 3. T 轮：若干 dense block 纯 cat 增宽 -> 生成 ``Q`` +（可选）FiLM 调制 V + 逐位置 ``v_mix``
    -> 注意力输出再 cat 回特征，宽度只增不减；每 ``compress_every_rounds`` 轮把主干宽度压到
    当前的 ``1 / compress_denominator``；
-4. 分类头：``RMSNorm`` + ``1x1 Conv``。
+4. 分类头：``Dropout`` + ``RMSNorm`` + ``1x1 Conv``。
+
+Dropout：主干特征在送入 ``q_gen``、每个 ``dense_block``、``film``（作为条件）以及分类头
+（``head_norm`` 之前）之前各有一次 dropout，四处由 ``[arch] q_gen_dropout`` /
+``dense_block_dropout`` / ``film_dropout`` / ``head_dropout`` 分别配置，``0`` 表示关闭。
 
 宽度：``d0 = n_q * d_v``，每轮增宽 ``blocks_per_round * d_block + n_q * d_v``，
 压缩点上除以 ``compress_denominator``（下限 ``d0``，最后一轮之后不压），压缩后的实际宽度
@@ -56,6 +60,21 @@ def mlp(width_in: int, width_out: int, hidden: Sequence[int] = ()) -> NormAct:
         post_process=NormAct.IdentityPostModule,
         mapper_type="linear",
     )
+
+
+def dropout(p: float, name: str) -> nn.Dropout:
+    """构造 ``p`` 概率的 :class:`torch.nn.Dropout`；``p = 0`` 时等价于直通。
+
+    Args:
+        p: 丢弃概率，取值 ``[0, 1)``。
+        name: 配置字段名，只用于报错信息（``[arch] <name>``）。
+
+    Raises:
+        ValueError: ``p`` 不在 ``[0, 1)`` 内（``1`` 会把输入全部丢掉，直接拒绝）。
+    """
+    if not 0.0 <= p < 1.0:
+        raise ValueError(f"[arch] {name} 必须在 [0, 1) 之间，收到 {p}")
+    return nn.Dropout(p)
 
 
 def dense_block(width_in: int, width_out: int) -> NormAct:
@@ -112,6 +131,8 @@ class _Iteration(nn.Module):
     """一轮迭代：dense 增宽 -> 生成 Q（可选调制 V）-> 注意力回填。
 
     ``arch.modulate_v`` 为 ``False`` 时不建 ``film`` / ``v_mix``，每轮直接复用静态 V。
+    主干特征在送入每个 dense block、``q_gen`` 与 ``film``（作为条件）之前各做一次 dropout，
+    三者分别由 ``arch.dense_block_dropout`` / ``arch.q_gen_dropout`` / ``arch.film_dropout`` 控制。
     """
 
     def __init__(self, width_in: int, arch: ArchConfig) -> None:
@@ -119,24 +140,31 @@ class _Iteration(nn.Module):
         self.blocks = nn.ModuleList(
             dense_block(width_in + i * arch.d_block, arch.d_block) for i in range(arch.blocks_per_round)
         )
+        # 与 blocks 一一对齐：每个 dense block 前各一个 dropout（同率、独立实例）。
+        self.block_drops = nn.ModuleList(
+            dropout(arch.dense_block_dropout, "dense_block_dropout") for _ in range(arch.blocks_per_round)
+        )
         width_out = width_in + arch.blocks_per_round * arch.d_block
         self.q_gen = mlp(width_out, arch.n_q * arch.d_k)
+        self.q_gen_drop = dropout(arch.q_gen_dropout, "q_gen_dropout")
         # FiLM 调制 + 逐位置 v_mix：只在 modulate_v 打开时存在。
         self.film: FiLM | None = None
         self.v_mix: NormAct | None = None
+        self.film_drop: nn.Dropout | None = None
         if arch.modulate_v:
             self.film = FiLM(width_out, arch.d_v, identity_init=arch.film_identity_init)
             self.v_mix = mlp(arch.d_v, arch.d_v)
+            self.film_drop = dropout(arch.film_dropout, "film_dropout")
         self.attn = TokenAttention(arch.n_q, arch.d_k, arch.d_v, dropout=arch.attention_dropout)
 
     def forward(self, x: Tensor, k: Tensor, v_base: Tensor, padding_mask: Tensor | None) -> Tensor:
-        for block in self.blocks:
-            x = block(x)
-        query = self.q_gen(x)  # (B, n_q*d_k, 1)
+        for block, block_drop in zip(self.blocks, self.block_drops, strict=True):
+            x = block(block_drop(x))
+        query = self.q_gen(self.q_gen_drop(x))  # (B, n_q*d_k, 1)
         value = v_base  # 不调制时直接用静态 V
-        film, v_mix = self.film, self.v_mix
-        if film is not None and v_mix is not None:
-            value = v_mix(film(v_base, x))  # (B, d_v, L)
+        film, v_mix, film_drop = self.film, self.v_mix, self.film_drop
+        if film is not None and v_mix is not None and film_drop is not None:
+            value = v_mix(film(v_base, film_drop(x)))  # (B, d_v, L)
         attended = self.attn(query, k, value, padding_mask)  # (B, n_q*d_v, 1)
         return cat((x, attended), dim=1)
 
@@ -193,6 +221,8 @@ class ByteFiLMDenseNet(BaseTensorModule):
         self.compressions = nn.ModuleList(compressions)
         self.d_final = width
 
+        # 分类头的 dropout 在 head_norm 之前（主干特征进入输出的最后一站）。
+        self.head_drop = dropout(arch.head_dropout, "head_dropout")
         self.head_norm = ChannelRmsNorm(self.d_final)
         self.head = nn.Conv1d(self.d_final, num_classes, kernel_size=1)
 
@@ -214,4 +244,4 @@ class ByteFiLMDenseNet(BaseTensorModule):
         x = self.attn(query, k, v_base, padding_mask)
         for iteration, compress in zip(self.iterations, self.compressions, strict=True):
             x = compress(iteration(x, k, v_base, padding_mask))
-        return self.head(self.head_norm(x)).squeeze(-1)  # (B, num_classes)
+        return self.head(self.head_norm(self.head_drop(x))).squeeze(-1)  # (B, num_classes)
