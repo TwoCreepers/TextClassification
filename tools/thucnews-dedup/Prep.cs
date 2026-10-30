@@ -1,5 +1,5 @@
-// C# 版预处理：读原始 THUCNews -> SimHash 去重 -> 按分类 8:1:1 划分 -> 写 pack。
-// 用法: prep <source> <output> [--seed N] [--limit-per-class N] [--workers N] [--no-dedup] [--overwrite]
+// C# 版预处理：读原始 THUCNews -> SimHash 去重（跨类簇整簇丢弃）-> 按分类 8:1:1 划分 -> 写 pack。
+// 用法: prep <source> <output> [--seed N] [--limit-per-class N] [--workers N] [--no-dedup] [--keep-cross-class] [--overwrite]
 
 using System.Diagnostics;
 using System.Text;
@@ -38,7 +38,8 @@ internal static class Prep
         int limitPerClass,
         int workers,
         bool dedup,
-        bool overwrite)
+        bool overwrite,
+        bool dropCrossClass = true)
     {
         var timer = Stopwatch.StartNew();
         var sourceDir = new DirectoryInfo(source);
@@ -133,12 +134,12 @@ internal static class Prep
             _ => { });
         Console.WriteLine($"SimHash: {timer.Elapsed.TotalSeconds:F1}s");
 
-        // ---- 去重：每簇保留“分类 + 编号”最小的那篇 ----
+        // ---- 去重：每簇保留“分类 + 编号”最小的那篇；跨类簇整簇丢弃 ----
         var keep = new bool[count];
         Array.Fill(keep, true);
         var clusters = 0;
         var pairs = 0;
-        var crossClass = (Clusters: 0L, Documents: 0L);
+        var crossClass = (Mask: Array.Empty<bool>(), Clusters: 0L, Documents: 0L);
         if (dedup)
         {
             var duplicatePairs = PackDedup.BuildPairs(hashes);
@@ -182,13 +183,26 @@ internal static class Prep
                 }
             }
 
+            // 跨类簇：簇里出现 ≥2 个分类，说明同一篇稿子被挂到了不同分类下（THUCNews 里常见于话题重叠）。
+            // 默认整簇丢弃：留下哪一篇都等于替一个标签自相矛盾的样本挑了个标签，不如整簇不要。
+            crossClass = PackDedup.AnalyzeCrossClass(parent, docClass.ToArray());
+            if (dropCrossClass)
+            {
+                for (var i = 0; i < count; i++)
+                {
+                    if (crossClass.Mask[i])
+                    {
+                        keep[i] = false;
+                    }
+                }
+            }
+
             Console.WriteLine(
                 $"去重: 近重复对 {pairs}，簇 {clusters}，保留 {keep.Count(v => v)} / {count}，{timer.Elapsed.TotalSeconds:F1}s");
-
-            // 跨类簇：簇里出现 ≥2 个分类，说明同一篇稿子被挂到了不同分类下（THUCNews 里常见于话题重叠）。
-            crossClass = PackDedup.CountCrossClass(parent, docClass.ToArray());
             Console.WriteLine(
-                $"跨类重复: {crossClass.Clusters} 簇 / {crossClass.Documents} 篇，{timer.Elapsed.TotalSeconds:F1}s");
+                $"跨类重复: {crossClass.Clusters} 簇 / {crossClass.Documents} 篇，"
+                + (dropCrossClass ? "已整簇丢弃" : "保留（--keep-cross-class）")
+                + $"，{timer.Elapsed.TotalSeconds:F1}s");
         }
         else
         {
@@ -310,12 +324,15 @@ internal static class Prep
             {
                 ["enabled"] = dedup,
                 ["method"] = $"simhash64(字符3-gram, 唯一 trigram 权重)，相似度 > 0.9（汉明距离 <= {MaxDistance}）",
-                ["policy"] = "每个近重复簇保留编号最小的一篇",
+                ["policy"] = dedup && dropCrossClass
+                    ? "每个近重复簇保留编号最小的一篇；跨类簇整簇丢弃"
+                    : "每个近重复簇保留编号最小的一篇",
                 ["pairs"] = pairs,
                 ["clusters"] = clusters,
                 ["dropped"] = count - keep.Count(v => v),
                 ["cross_class"] = new JsonObject
                 {
+                    ["policy"] = dropCrossClass ? "drop-cluster" : "keep",
                     ["clusters"] = crossClass.Clusters,
                     ["documents"] = crossClass.Documents,
                 },

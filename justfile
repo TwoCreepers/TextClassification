@@ -28,12 +28,12 @@ infer text="":
 prep:
     uv run ml-prepare-thucnews --source data/THUCNews --output data/processed/THUCNews
 
-# 预处理 THUCNews（.NET）：先去重（SimHash 相似度 > 0.9），再每个分类 8:1:1 划分，写出 pack。
+# 预处理 THUCNews（.NET）：先去重（SimHash 相似度 > 0.9；跨类近重复簇整簇丢弃），再每个分类 8:1:1 划分，写出 pack。
 # C# 实现（tools/thucnews-dedup），需要 dotnet；跑之前建议先把 data/ 加进杀毒软件的排除项。
 prep-dedup:
     dotnet run -c Release --project tools/thucnews-dedup -- prep data/THUCNews data/processed/THUCNews --overwrite
 
-# 对已有的 pack 再补一次去重（先去重后划分的产物不需要，重复执行是幂等的）。
+# 对已有的 pack 再补一次去重（跨类簇同样整簇丢弃；先去重后划分的产物不需要，重复执行是幂等的）。
 dedup:
     dotnet run -c Release --project tools/thucnews-dedup -- dedup-pack data/processed/THUCNews 12
 

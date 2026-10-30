@@ -9,7 +9,7 @@ THUCNews 字节级文本分类的训练框架：主模型可选 `first_token` �
 | 命令 | 作用 |
 | --- | --- |
 | `just prep` | 预处理（纯 Python）：每个分类 8:1:1 划分，写出 pack。**不含去重** |
-| `just prep-dedup` | 预处理（.NET）：先 SimHash 去重（相似度 > 0.9）再 8:1:1 划分 |
+| `just prep-dedup` | 预处理（.NET）：先 SimHash 去重（相似度 > 0.9，跨类簇整簇丢弃）再 8:1:1 划分 |
 | `just cslint` | 用 `dotnet format` 格式化 C# 工具 `tools/thucnews-dedup`（需要 dotnet） |
 | `ml-train` | 训练 + 验证。**不跑测试集**；存 `best.ckpt`（`val/f1_macro` 最优）与 `last.ckpt`（最后一个 epoch） |
 | `ml-test` | 载入指定 checkpoint，在验证集（`--split val`）或测试集（`--split test`）上评测 |
@@ -172,13 +172,24 @@ THUCNews 里同一篇稿子被反复抓取的情况不少（模板化的行情�
 | val | 81,916 |
 | test | 81,936 |
 
+> 表里这份是旧行为（跨类簇仍保留一篇）的产物；按现在的默认（整簇丢弃）重跑，篇数会再少一些，
+> 减少量等于 `dedup.cross_class.clusters`。
+
 去重方法与统计写在 `dataset_info.json` 的 `dedup` 字段；已有的 pack 想再补一次去重可以用
 `just dedup`（`dedup-pack` 命令，只读 3 个大文件，幂等）。
 
-其中 `dedup.cross_class` 单独记录**跨类重复**：近重复簇里出现 ≥2 个分类时算一个跨类簇，簇内全部
-文档都计入 `documents`（保留的那篇也算 —— 它本身就和别的分类里的稿子重复）。两个数字都打在
-`just prep-dedup` / `just dedup` 的控制台输出里；跨类多说明标签边界本身有重叠（同一篇稿件被挂到
-不同分类），这类样本对模型是可学的噪声而非纯冗余，所以只统计、不额外删除。
+**跨类重复默认整簇丢弃。** 一个近重复簇里出现 ≥2 个分类时算「跨类簇」：这类样本是标签自相矛盾的
+（同一篇稿子被挂到两个分类下），留哪一篇都等于替它随便挑了个标签，所以簇里一篇都不保留。统计写在
+`dedup.cross_class`：
+
+| 字段 | 含义 |
+| --- | --- |
+| `clusters` | 跨类簇数 |
+| `documents` | 这些簇里的文档数，**全部不进 pack**（已计入 `dedup.dropped`） |
+| `policy` | `drop-cluster`；加 `--keep-cross-class` 则退化成 `keep`，按普通簇保留一篇 |
+
+两个数字都打在 `just prep-dedup` / `just dedup` 的控制台输出里。想去掉这个行为用
+`--keep-cross-class`（`just` 配方没暴露它，要直接调 `dotnet run ... -- prep <src> <out> --keep-cross-class`）。
 
 - 划分种子由 `--seed`（默认 42）与分类名一起派生，重复运行 pack 逐字节相同。
 - `--limit-per-class N` 每个分类只取前 N 篇（冒烟测试）。

@@ -317,19 +317,20 @@ internal static class Program
                 args.Length > 4 ? int.Parse(args[4]) : Environment.ProcessorCount),
             "sync" => Task.FromResult(RunSyncBench(args[1], int.Parse(args[2]))),
             "purge" => Task.FromResult(RunPurge(int.Parse(args[1]))),
-            "dedup-pack" => Task.FromResult(PackDedup.Run(args[1], int.Parse(args[2]))),
+            "dedup-pack" => Task.FromResult(PackDedup.Run(args[1], int.Parse(args[2]), !args.Contains("--keep-cross-class"))),
             "prep" => Task.FromResult(RunPrep(args)),
             _ => throw new ArgumentException($"unknown command: {command}"),
         };
     }
 
-    /// <summary>prep &lt;source&gt; &lt;output&gt; [--seed N] [--limit-per-class N] [--workers N] [--no-dedup] [--overwrite]</summary>
+    /// <summary>prep &lt;source&gt; &lt;output&gt; [--seed N] [--limit-per-class N] [--workers N] [--no-dedup] [--keep-cross-class] [--overwrite]</summary>
     private static int RunPrep(string[] args)
     {
         var seed = 42;
         var limitPerClass = 0;
         var workers = Environment.ProcessorCount;
         var dedup = true;
+        var dropCrossClass = true;
         var overwrite = false;
         for (var i = 3; i < args.Length; i++)
         {
@@ -347,6 +348,9 @@ internal static class Program
                 case "--no-dedup":
                     dedup = false;
                     break;
+                case "--keep-cross-class":
+                    dropCrossClass = false;
+                    break;
                 case "--overwrite":
                     overwrite = true;
                     break;
@@ -355,6 +359,6 @@ internal static class Program
             }
         }
 
-        return Prep.Run(args[1], args[2], seed, limitPerClass, workers, dedup, overwrite);
+        return Prep.Run(args[1], args[2], seed, limitPerClass, workers, dedup, overwrite, dropCrossClass);
     }
 }

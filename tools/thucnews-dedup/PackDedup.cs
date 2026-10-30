@@ -1,5 +1,5 @@
 // 直接在 pack（{split}.bin + .offsets.npy + .labels.npy）上做 SimHash 近重复去重，并原地重写。
-// 用法: dedup-pack <root> <等待并发>
+// 用法: dedup-pack <root> <等待并发> [--keep-cross-class]
 
 using System.Numerics;
 using System.Text;
@@ -12,7 +12,8 @@ internal static class PackDedup
     private const int MaxDistance = 6;
     private static readonly string[] Splits = { "train", "val", "test" };
 
-    public static int Run(string root, int workers)
+    // dropCrossClass：跨类近重复簇整簇丢弃（默认，去掉了标签自相矛盾的样本）；保持 false 则按普通簇处理。
+    public static int Run(string root, int workers, bool dropCrossClass = true)
     {
         var packDir = Path.Combine(root, "packs");
         var infoPath = Path.Combine(root, "dataset_info.json");
@@ -107,9 +108,22 @@ internal static class PackDedup
             }
         }
 
-        var crossClass = CountCrossClass(parent, docClass);
+        var crossClass = AnalyzeCrossClass(parent, docClass);
+        if (dropCrossClass)
+        {
+            // 跨类簇一篇都不留：簇内文档本来就要删到只剩一篇，现在连那篇也不进 pack。
+            for (var index = 0; index < total; index++)
+            {
+                if (crossClass.Mask[index])
+                {
+                    keep[index] = false;
+                }
+            }
+        }
+
         Console.WriteLine(
-            $"连通分量: {clusters}，保留 {keep.Count(v => v)} / {total}，跨类簇 {crossClass.Clusters} 个（涉及 {crossClass.Documents} 篇）");
+            $"连通分量: {clusters}，保留 {keep.Count(v => v)} / {total}，跨类簇 {crossClass.Clusters} 个（涉及 {crossClass.Documents} 篇）"
+            + (dropCrossClass ? "，已整簇丢弃" : "，保留"));
 
         // 写新的 pack
         var newDir = Path.Combine(root, "packs.new");
@@ -184,11 +198,14 @@ internal static class PackDedup
         info["dedup"] = new JsonObject
         {
             ["method"] = $"simhash64(字符3-gram, 唯一 trigram 权重)，相似度 > 0.9（汉明距离 <= {MaxDistance}）",
-            ["policy"] = "每个近重复簇保留一篇：train 优先，其次编号最小",
+            ["policy"] = dropCrossClass
+                ? "每个近重复簇保留一篇（train 优先，其次编号最小）；跨类簇整簇丢弃"
+                : "每个近重复簇保留一篇：train 优先，其次编号最小",
             ["clusters"] = clusters,
             ["dropped"] = dropped,
             ["cross_class"] = new JsonObject
             {
+                ["policy"] = dropCrossClass ? "drop-cluster" : "keep",
                 ["clusters"] = crossClass.Clusters,
                 ["documents"] = crossClass.Documents,
             },
@@ -271,18 +288,18 @@ internal static class PackDedup
     }
 
     /// <summary>
-    /// 统计「跨类重复」：一个近重复簇里出现 ≥2 个不同分类时算一个跨类簇，簇里的全部文档都算跨类重复文档
-    /// （包括被保留的那篇 —— 它和别的分类里的稿子重复，本身就是跨类的重复证据）。
+    /// 找出「跨类重复」：一个近重复簇里出现 ≥2 个不同分类时算一个跨类簇，簇里全部文档都算跨类重复文档
+    /// （包括本来会被保留的那篇 —— 它和别的分类里的稿子重复，本身就是跨类的重复证据）。
     /// </summary>
     /// <param name="parent">并查集数组（由 <see cref="BuildPairs"/> 得到的结果建出来的那个）。</param>
     /// <param name="groups">每篇文档的分类下标，长度必须与 <paramref name="parent"/> 相同。</param>
-    /// <returns>跨类簇数、这些簇里的文档数。</returns>
-    internal static (long Clusters, long Documents) CountCrossClass(int[] parent, int[] groups)
+    /// <returns>每篇文档是否属于跨类簇、跨类簇数、这些簇里的文档数。</returns>
+    internal static (bool[] Mask, long Clusters, long Documents) AnalyzeCrossClass(int[] parent, int[] groups)
     {
         // 只记每个簇第一次见到的分类：再见到别的分类就把该簇标成跨类，不用给每个簇存集合。
         var firstClass = new int[groups.Length];
         Array.Fill(firstClass, -1);
-        var cross = new bool[groups.Length];
+        var crossRoot = new bool[groups.Length];
         for (var index = 0; index < groups.Length; index++)
         {
             var root = Find(parent, index);
@@ -290,28 +307,30 @@ internal static class PackDedup
             {
                 firstClass[root] = groups[index];
             }
-            else if (!cross[root] && firstClass[root] != groups[index])
+            else if (!crossRoot[root] && firstClass[root] != groups[index])
             {
-                cross[root] = true;
+                crossRoot[root] = true;
             }
         }
 
+        var mask = new bool[groups.Length];
         long clusters = 0;
         long documents = 0;
         for (var index = 0; index < groups.Length; index++)
         {
-            if (cross[index])
+            if (crossRoot[index])
             {
                 clusters++;
             }
 
-            if (cross[Find(parent, index)])
+            if (crossRoot[Find(parent, index)])
             {
+                mask[index] = true;
                 documents++;
             }
         }
 
-        return (clusters, documents);
+        return (mask, clusters, documents);
     }
 
     private static bool Better(int candidate, int current, byte[] docSplit)

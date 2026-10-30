@@ -35,7 +35,7 @@ just lint     # ruff 自动修复 + 格式化，再跑 pyright
 需要去掉重复稿（SimHash 相似度 > 0.9）就用 .NET 通道，产物格式完全一样：
 
 ```pwsh
-just prep-dedup   # 先去重、再 8:1:1 划分；需要 dotnet
+just prep-dedup   # 先去重（跨类近重复簇整簇丢弃）、再 8:1:1 划分；需要 dotnet
 just cslint       # dotnet format：按 SDK 风格格式化 tools/thucnews-dedup
 ```
 
