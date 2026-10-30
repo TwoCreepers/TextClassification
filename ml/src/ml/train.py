@@ -26,7 +26,7 @@ LOGGER = logging.getLogger(__name__)
 
 def build_datamodule(cfg: Config) -> ByteClassificationDataModule:
     """按配置构建数据集模块（类别数会与 ``[model]`` 交叉校验）。"""
-    return ByteClassificationDataModule(cfg.data, num_classes=cfg.model.num_classes)
+    return ByteClassificationDataModule(cfg.data, num_classes=cfg.model.num_classes, seed=cfg.trainer.seed)
 
 
 def build_module(cfg: Config) -> ByteClassifierModule:

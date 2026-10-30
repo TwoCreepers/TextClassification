@@ -44,6 +44,8 @@ class DataConfig:
     pad_to_max_length: bool = True
     batch_size: int = 64
     num_workers: int = 0
+    # DataLoader 的 pinned memory：batch 先落到页锁定内存，H2D 拷贝更快；只在有加速器时有收益。
+    pin_memory: bool = False
 
 
 type ModelArchType = Literal["first_token", "byte_film"]

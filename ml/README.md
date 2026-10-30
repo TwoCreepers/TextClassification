@@ -95,3 +95,7 @@ data/processed/THUCNews/
 - **学习率调度**：`[scheduler] name` 为 `none` 时 lr 恒定，为 `cosine` 时按 epoch 余弦退火到
   `min_lr`；`warmup_epochs > 0` 时先用 `LinearLR` 从 `lr * warmup_start_factor` 线性升到 `lr`，
   再交给余弦。余弦周期取 `max_epochs - warmup_epochs`。
+- **DataLoader**：`[data] pin_memory` 控制页锁定内存（`pin_memory_device` 在 torch 2.14 已
+  deprecated，因此不提供该配置）。每个 split 的 DataLoader 都挂一个显式播种的 `torch.Generator`，
+  种子为 `[trainer] seed` 加 split 顺序（train/val/test → +0/+1/+2），
+  因此 shuffle 顺序可复现且不消耗全局 RNG。

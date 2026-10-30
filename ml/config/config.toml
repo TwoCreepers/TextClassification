@@ -8,12 +8,14 @@ root = "data/processed/THUCNews"
 train_split = "train"
 val_split = "val"
 test_split = "test"
-max_length = 512 # 每篇最多保留的 UTF-8 字节数
+max_length = 512 # 每篇最多保留的 UTF-8 字节数，若 pad_to_max_length = false 则该配置无效
 # 固定补齐到 max_length：batch 形状恒定，torch.compile 用静态形状只需编译一次；
 # 改成 false 则按 batch 内最长序列补齐（变长），torch.compile 会自动改用动态形状。
 pad_to_max_length = false
-batch_size = 128
+batch_size = 1536
 num_workers = 0
+# DataLoader 的 pinned memory（有加速器时 H2D 更快）。
+pin_memory = true
 
 [model]
 # 架构：first_token（基线，只看第一个 token）或 byte_film（ByteFiLM-DenseNet）。
@@ -27,31 +29,31 @@ bias = true
 use_padding_mask = true
 
 [arch]
-d_k = 32
-d_v = 32
+d_k = 16
+d_v = 16
 # mlp_k / mlp_v 的中间隐藏层宽度数组：如 [64, 128] 表示 d -> 64 -> 128 -> d；
 # 空数组 [] 表示不加隐藏层（保持单层 d -> d）。
-mlp_hidden = [64]
+mlp_hidden = [32]
 # 是否调制 V：true 时每轮 FiLM 调制 V 再逐位置 v_mix；false 则每轮直接复用静态 V
 # （省掉每轮 film / v_mix 的参数）。
 modulate_v = false
 n_q = 16
-d_block = 256
+d_block = 64
 blocks_per_round = 2
-rounds = 6
+rounds = 3
 # 宽度压缩：每 compress_every_rounds 轮把主干宽度压到当前的 1/compress_denominator。
 # 0 表示不压缩；目标宽度下限是 n_q*d_v，且最后一轮之后不压缩。
 # denominator 可以是 int（所有压缩点共用）或数组（按压缩点顺序取，如 [2, 4]），
 # 数组长度必须 >= 压缩点个数；取值 >= 1，填 1 表示该点不压缩（恒等映射）。
-compress_every_rounds = 3
-compress_denominator = 2
-attention_dropout = 0.1
+compress_every_rounds = 0
+compress_denominator = 1
+attention_dropout = 0.2
 # FiLM 初始化为恒等调制（gamma=1, beta=0）。
 film_identity_init = true
 
 [optim]
-lr = 0.001
-weight_decay = 1e-1
+lr = 4e-3
+weight_decay = 1e-5
 # 标签平滑（nn.CrossEntropyLoss 的 label_smoothing）：0.0 关闭；常用 0.05 ~ 0.1。
 # 打开后训练/验证 loss 的下界会抬高，不能和之前的曲线直接比数值。
 label_smoothing = 0.1
@@ -75,7 +77,7 @@ log_graph = false
 
 [trainer]
 seed = 42
-max_epochs = 100
+max_epochs = 50
 accelerator = "auto"
 devices = 1
 # precision = "32-true"

@@ -145,11 +145,14 @@ class ByteClassificationDataModule(pl.LightningDataModule):
     Args:
         cfg: 数据集相关配置。
         num_classes: 期望的类别数；若与 ``dataset_info.json`` 里的分类数不一致会直接报错。
+        seed: 随机种子（通常传 ``[trainer] seed``）。三个 split 各自派生一个
+            ``torch.Generator``：``seed + split 顺序``，让 shuffle 顺序可复现且互不相同。
     """
 
-    def __init__(self, cfg: DataConfig, num_classes: int | None = None) -> None:
+    def __init__(self, cfg: DataConfig, num_classes: int | None = None, seed: int = 0) -> None:
         super().__init__()
         self.cfg = cfg
+        self.seed = seed
         self.expected_num_classes = num_classes
         self.root = Path(cfg.root)
         self.class_names: list[str] = []
@@ -193,6 +196,21 @@ class ByteClassificationDataModule(pl.LightningDataModule):
             splits[split] = dataset
         self._splits = splits
 
+    def _split_seed(self, split: str) -> int:
+        """split 的随机种子：配置种子按 ``train/val/test`` 顺序线性错开。"""
+        order = (self.cfg.train_split, self.cfg.val_split, self.cfg.test_split)
+        offset = order.index(split) if split in order else len(order)
+        return self.seed + offset
+
+    def _generator(self, split: str) -> torch.Generator:
+        """每个 split 一个手动播种的 ``torch.Generator``，让 shuffle / worker 播种可复现。
+
+        显式传 ``generator`` 后，DataLoader 不再消耗全局 RNG，训练顺序由配置种子决定。
+        """
+        generator = torch.Generator()
+        generator.manual_seed(self._split_seed(split))
+        return generator
+
     def _loader(self, split: str, *, shuffle: bool) -> DataLoader:
         pad_to = self.cfg.max_length if self.cfg.pad_to_max_length else None
         return DataLoader(
@@ -202,6 +220,8 @@ class ByteClassificationDataModule(pl.LightningDataModule):
             num_workers=self.cfg.num_workers,
             collate_fn=partial(collate_byte_batch, pad_to=pad_to),
             persistent_workers=self.cfg.num_workers > 0,
+            pin_memory=self.cfg.pin_memory,
+            generator=self._generator(split),
         )
 
     def train_dataloader(self) -> DataLoader:
