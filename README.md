@@ -22,8 +22,6 @@ just lint    # ruff 自动修复 + 格式化，再跑 pyright
 ## 开发方式
 
 本仓库由人类开发者与 AI 编码代理共同维护。代理是 DeepSeek Harness 内置的
-`deepseek-flash` 助手，长期参与这个仓库（不只某一个会话）：它可以直接读写代码、跑
-`just lint` 与冒烟 / 训练验证，需要时也会执行 git 提交与推送。
+`deepseek-flash` 助手，长期参与这个仓库。
 
-所以这里不按会话记录"这次是谁改了什么"——每处改动一律以 commit 与 diff 为准，人类开发者
-负责方向与最终审阅。
+每处改动一律以 commit 与 diff 为准，人类开发者负责方向与最终审阅。
