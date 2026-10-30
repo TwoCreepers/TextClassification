@@ -2,15 +2,19 @@
 # 所有字段都可省略，省略时回落到 ml/src/ml/config.py 里的 dataclass 默认值。
 
 [data]
-# 预处理产物（uv run ml-prepare-thucnews）所在的根目录：
+# 预处理产物（just prep：纯 Python 8:1:1；just prep-dedup：.NET 先去重再 8:1:1）所在的根目录：
 # root/dataset_info.json + root/packs/{split}.bin|.offsets.npy|.labels.npy。
 root = "data/processed/THUCNews"
 train_split = "train"
 val_split = "val"
 test_split = "test"
-max_length = 512 # 每篇最多保留的 UTF-8 字节数，若 pad_to_max_length = false 则该配置无效
-# 固定补齐到 max_length：batch 形状恒定，torch.compile 用静态形状只需编译一次；
-# 改成 false 则按 batch 内最长序列补齐（变长），torch.compile 会自动改用动态形状。
+# 每篇最多保留的 UTF-8 字节数：数据集读取时先截断到这里，与 pad_to_max_length 无关。
+# 填 -1 表示不截断（整篇喂给模型；长文很占显存，只在实验时用）。
+max_length = 512
+# 是否把 batch 补齐到 max_length（只影响补齐长度，不影响上面的截断）：
+# 固定补齐时 batch 形状恒定，torch.compile 用静态形状只需编译一次；
+# 改成 false 则只补到 batch 内最长序列（变长），torch.compile 会自动改用动态形状。
+# max_length = -1（不截断）时没有固定长度可补，这一项不生效，一律变长补齐。
 pad_to_max_length = false
 batch_size = 1024
 num_workers = 0
@@ -50,10 +54,10 @@ compress_denominator = 1
 #   dense_block_dropout 送入每个 dense block 之前
 #   film_dropout        作为条件特征送入 FiLM 之前（modulate_v = false 时不生效）
 #   head_dropout        送入分类头之前（head_norm 之前）
-q_gen_dropout = 0.1
-dense_block_dropout = 0.1
-film_dropout = 0.1
-head_dropout = 0.1
+q_gen_dropout = 0
+dense_block_dropout = 0
+film_dropout = 0
+head_dropout = 0
 attention_dropout = 0.3
 # FiLM 初始化为恒等调制（gamma=1, beta=0）。
 film_identity_init = true
