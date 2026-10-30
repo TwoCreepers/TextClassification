@@ -1,7 +1,7 @@
 [project]
 name = "ml"
 version = "0.1.0"
-description = "Add your description here"
+description = "THUCNews 字节级文本分类：训练 / 检查点评测 / 推理"
 readme = "README.md"
 authors = [
     { name = "TwoCreepers", email = "z15296529345@outlook.com" }
@@ -19,6 +19,8 @@ dependencies = [
 
 [project.scripts]
 ml-train = "ml.train:train"
+ml-test = "ml.test:main"
+ml-infer = "ml.infer:infer"
 ml-prepare-thucnews = "ml.preprocess:main"
 
 [build-system]

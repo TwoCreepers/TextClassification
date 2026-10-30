@@ -30,7 +30,8 @@ type Float32MatmulPrecisionType = Literal["highest", "high", "medium"]
 class DataConfig:
     """数据集与 DataLoader 配置。
 
-    数据来自 ``uv run ml-prepare-thucnews`` 生成的顺序字节 pack：根目录下需要有
+    数据来自 ``just prep``（纯 Python）或 ``just prep-dedup``（.NET，先去重再划分）生成的顺序字节
+    pack：根目录下需要有
     ``dataset_info.json`` 和 ``packs/{split}.bin`` + ``.offsets.npy`` + ``.labels.npy``。
     """
 
@@ -38,9 +39,12 @@ class DataConfig:
     train_split: str = "train"
     val_split: str = "val"
     test_split: str = "test"
+    # 每篇最多保留的 UTF-8 字节数：``THUCNewsDataset`` 读取时先截断到这里；``-1`` 表示不截断。
     max_length: int = 512
-    # 固定补齐到 max_length：batch 形状恒定，torch.compile 无需动态形状、只需编译一次。
-    # 关闭则按 batch 内最长序列补齐（变长），torch.compile 会自动改用动态形状。
+    # 是否把 batch 补齐到 ``max_length``（只影响补齐长度，不影响上面的截断）；
+    # ``max_length = -1``（不截断）时序列长度没有上界，只能是变长补齐，这一项不生效。
+    # 固定补齐时 batch 形状恒定，torch.compile 无需动态形状、只需编译一次；
+    # 关闭则只补到 batch 内最长序列（变长），torch.compile 会自动改用动态形状。
     pad_to_max_length: bool = True
     batch_size: int = 64
     num_workers: int = 0
@@ -180,9 +184,9 @@ class CompileConfig:
     """torch.compile 及其 dynamo 开关配置。
 
     Note:
-        动态形状不在这里配置，由 ``[data] pad_to_max_length`` 自动决定：变长补齐必须开
-        动态形状（否则每个新 ``(B, L)`` 都会重编译，``fullgraph=True`` 下还会撞
-        ``recompile_limit`` 直接失败）；固定补齐则保持静态形状最快。
+        动态形状不在这里配置，由数据是否定长自动决定（``pad_to_max_length`` 且 ``max_length``
+        会截断时为定长）：变长补齐必须开动态形状（否则每个新 ``(B, L)`` 都会重编译，
+        ``fullgraph=True`` 下还会撞 ``recompile_limit`` 直接失败）；固定补齐则保持静态形状最快。
     """
 
     enabled: bool = True

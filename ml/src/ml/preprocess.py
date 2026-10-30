@@ -16,8 +16,9 @@
 由 ``--seed`` 和分类名派生，同一份数据重复运行结果完全一致（pack 逐字节相同）。
 
 Note:
-    83.6 万篇每篇都要读一次，而 Windows 上打开/读取单个小文件受安全软件逐个扫描拖累（约
-    3~5 ms），所以读用线程池并发（默认 16 线程，实测快 8 倍），全量约 2 分钟。
+    83.6 万篇每篇都要读一次，而 Windows 上打开/读取单个小文件会被安全软件的实时扫描拖慢（每次
+    ``open`` 都扫一遍文件内容），所以读用线程池并发（默认 16 线程）。**跑之前建议先把 ``data/``
+    加进杀毒软件的排除项**（Windows Defender 的实时防护尤其明显），否则吞吐会被压到个位数 MB/s。
 """
 
 from __future__ import annotations
@@ -79,7 +80,7 @@ def collect_documents(class_dir: Path, limit: int = 0) -> list[Path]:
     Note:
         用 ``os.scandir`` 而不是 ``Path.iterdir()``：单个分类最多 15 万个文件，
         ``DirEntry.is_file()`` 直接读目录枚举里缓存的属性，不会每篇再 stat 一次
-        （15 万次 stat 在 Windows 上要几十秒，是这里的主要开销）。
+        （15 万次 stat 是这里的主要开销）。
     """
     with os.scandir(class_dir) as entries:
         documents = [Path(entry.path) for entry in entries if entry.is_file() and entry.name.endswith(".txt")]
