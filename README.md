@@ -15,7 +15,7 @@
 | `ml/` | 训练工程：数据预处理、模型、训练 / 评测 / 推理入口（细节见 [`ml/README.md`](ml/README.md)） |
 | `ml/config/config.toml` | 所有超参与开关（数据、模型、优化器、EMA、日志、Trainer、编译） |
 | `packages/FishEdTorchBaseLib/` | 内部 PyTorch 模块库 `fishetbl`（`NormAct` / `FiLM` / `TokenAttention` / `ChannelRmsNorm` 等） |
-| `justfile` | 常用配方：`just train` / `just test` / `just infer` / `just prep` / `just prep-dedup` / `just lint` |
+| `justfile` | 常用配方：`just train` / `just test` / `just infer` / `just prep` / `just prep-dedup` / `just lint` / `just cslint` |
 | `pyproject.toml` | uv workspace 根，成员是 `ml` 与 `packages/FishEdTorchBaseLib` |
 
 ## 快速开始
@@ -36,6 +36,7 @@ just lint     # ruff 自动修复 + 格式化，再跑 pyright
 
 ```pwsh
 just prep-dedup   # 先去重、再 8:1:1 划分；需要 dotnet
+just cslint       # dotnet format：按 SDK 风格格式化 tools/thucnews-dedup
 ```
 
 > **跑预处理前先把杀毒软件的实时扫描关掉**（或把 `data/` 加进排除项），尤其是会拦截 IO 的

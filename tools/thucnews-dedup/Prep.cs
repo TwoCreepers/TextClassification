@@ -63,7 +63,7 @@ internal static class Prep
 
         // ---- 枚举文档（分类按名字排序，类内按数字 id 排序）----
         var paths = new List<string>();
-        var docClass = new List<byte>();
+        var docClass = new List<int>();
         var docSize = new List<int>();
         for (var classIndex = 0; classIndex < classDirs.Length; classIndex++)
         {
@@ -73,7 +73,7 @@ internal static class Prep
             for (var i = 0; i < take; i++)
             {
                 paths.Add(files[i].FullName);
-                docClass.Add((byte)classIndex);
+                docClass.Add(classIndex);
                 docSize.Add((int)files[i].Length);
             }
         }
@@ -138,6 +138,7 @@ internal static class Prep
         Array.Fill(keep, true);
         var clusters = 0;
         var pairs = 0;
+        var crossClass = (Clusters: 0L, Documents: 0L);
         if (dedup)
         {
             var duplicatePairs = PackDedup.BuildPairs(hashes);
@@ -183,6 +184,11 @@ internal static class Prep
 
             Console.WriteLine(
                 $"去重: 近重复对 {pairs}，簇 {clusters}，保留 {keep.Count(v => v)} / {count}，{timer.Elapsed.TotalSeconds:F1}s");
+
+            // 跨类簇：簇里出现 ≥2 个分类，说明同一篇稿子被挂到了不同分类下（THUCNews 里常见于话题重叠）。
+            crossClass = PackDedup.CountCrossClass(parent, docClass.ToArray());
+            Console.WriteLine(
+                $"跨类重复: {crossClass.Clusters} 簇 / {crossClass.Documents} 篇，{timer.Elapsed.TotalSeconds:F1}s");
         }
         else
         {
@@ -308,6 +314,11 @@ internal static class Prep
                 ["pairs"] = pairs,
                 ["clusters"] = clusters,
                 ["dropped"] = count - keep.Count(v => v),
+                ["cross_class"] = new JsonObject
+                {
+                    ["clusters"] = crossClass.Clusters,
+                    ["documents"] = crossClass.Documents,
+                },
             },
         };
         for (var split = 0; split < Splits.Length; split++)
@@ -445,7 +456,8 @@ internal static class Prep
         stream.Write(buffer, 0, length);
     }
 
-    private static int CompareNumeric(FileInfo a, FileInfo b)    {
+    private static int CompareNumeric(FileInfo a, FileInfo b)
+    {
         var left = int.TryParse(Path.GetFileNameWithoutExtension(a.Name), out var x) ? x : -1;
         var right = int.TryParse(Path.GetFileNameWithoutExtension(b.Name), out var y) ? y : -1;
         return left.CompareTo(right);

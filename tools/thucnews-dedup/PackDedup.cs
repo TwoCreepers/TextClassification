@@ -39,6 +39,7 @@ internal static class PackDedup
         }
 
         var docSplit = new byte[total];
+        var docClass = new int[total];
         var docStart = new int[total];
         var docLength = new int[total];
         for (var split = 0; split < Splits.Length; split++)
@@ -47,6 +48,7 @@ internal static class PackDedup
             {
                 var index = starts[split] + i;
                 docSplit[index] = (byte)split;
+                docClass[index] = (int)labels[split][i];
                 docStart[index] = (int)offsets[split][i];
                 docLength[index] = (int)(offsets[split][i + 1] - offsets[split][i]);
             }
@@ -105,7 +107,9 @@ internal static class PackDedup
             }
         }
 
-        Console.WriteLine($"连通分量: {clusters}，保留 {keep.Count(v => v)} / {total}");
+        var crossClass = CountCrossClass(parent, docClass);
+        Console.WriteLine(
+            $"连通分量: {clusters}，保留 {keep.Count(v => v)} / {total}，跨类簇 {crossClass.Clusters} 个（涉及 {crossClass.Documents} 篇）");
 
         // 写新的 pack
         var newDir = Path.Combine(root, "packs.new");
@@ -183,6 +187,11 @@ internal static class PackDedup
             ["policy"] = "每个近重复簇保留一篇：train 优先，其次编号最小",
             ["clusters"] = clusters,
             ["dropped"] = dropped,
+            ["cross_class"] = new JsonObject
+            {
+                ["clusters"] = crossClass.Clusters,
+                ["documents"] = crossClass.Documents,
+            },
         };
         File.WriteAllText(
             infoPath,
@@ -259,6 +268,50 @@ internal static class PackDedup
         }
 
         return pairs;
+    }
+
+    /// <summary>
+    /// 统计「跨类重复」：一个近重复簇里出现 ≥2 个不同分类时算一个跨类簇，簇里的全部文档都算跨类重复文档
+    /// （包括被保留的那篇 —— 它和别的分类里的稿子重复，本身就是跨类的重复证据）。
+    /// </summary>
+    /// <param name="parent">并查集数组（由 <see cref="BuildPairs"/> 得到的结果建出来的那个）。</param>
+    /// <param name="groups">每篇文档的分类下标，长度必须与 <paramref name="parent"/> 相同。</param>
+    /// <returns>跨类簇数、这些簇里的文档数。</returns>
+    internal static (long Clusters, long Documents) CountCrossClass(int[] parent, int[] groups)
+    {
+        // 只记每个簇第一次见到的分类：再见到别的分类就把该簇标成跨类，不用给每个簇存集合。
+        var firstClass = new int[groups.Length];
+        Array.Fill(firstClass, -1);
+        var cross = new bool[groups.Length];
+        for (var index = 0; index < groups.Length; index++)
+        {
+            var root = Find(parent, index);
+            if (firstClass[root] < 0)
+            {
+                firstClass[root] = groups[index];
+            }
+            else if (!cross[root] && firstClass[root] != groups[index])
+            {
+                cross[root] = true;
+            }
+        }
+
+        long clusters = 0;
+        long documents = 0;
+        for (var index = 0; index < groups.Length; index++)
+        {
+            if (cross[index])
+            {
+                clusters++;
+            }
+
+            if (cross[Find(parent, index)])
+            {
+                documents++;
+            }
+        }
+
+        return (clusters, documents);
     }
 
     private static bool Better(int candidate, int current, byte[] docSplit)

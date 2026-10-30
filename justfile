@@ -37,6 +37,11 @@ prep-dedup:
 dedup:
     dotnet run -c Release --project tools/thucnews-dedup -- dedup-pack data/processed/THUCNews 12
 
+# C# 工具（tools/thucnews-dedup）的格式检查：dotnet format 直接按 SDK 风格重写文件。
+# 只想检查不落盘：dotnet format tools/thucnews-dedup --verify-no-changes
+cslint:
+    dotnet format tools/thucnews-dedup
+
 # 代码检查：ruff 自动修复 + 格式化，最后跑 pyright 类型检查。
 lint:
     uv run ruff check --fix .
