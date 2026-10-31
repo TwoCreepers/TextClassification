@@ -82,19 +82,18 @@ just cslint       # dotnet format：按 SDK 风格格式化 tools/thucnews-dedup
    ...（共 14 个分类）
 ```
 
-`ml-test` 每行一个指标，例如：
+`ml-test` 每行一个指标，例如（数字和 checkpoint 路径都是瞎写的，只用来对齐输出格式，不是任何一次
+真实训练的结果）：
 
 ```text
 === test 集评测 ===
-checkpoint: lightning_logs\byte_film\version_13\checkpoints\best.ckpt
+checkpoint: lightning_logs\byte_film\version_9999\checkpoints\best.ckpt
 
-test/loss                     0.7549  交叉熵（按样本加权平均）
-test/f1_macro                 0.9034  macro F1：先按类别算 F1 再算术平均，每个类别同权
-test/f1_micro                 0.9184  micro F1：先累计的 TP/FP/FN 再算 F1，单标签多分类下等于准确率
-test/top1_acc_micro           0.9184  micro top1 准确率：argmax 命中的样本占比
+test/loss                     9.8765  交叉熵（按样本加权平均）
+test/f1_macro                 0.1111  macro F1：先按类别算 F1 再算术平均，每个类别同权
+test/f1_micro                 0.2222  micro F1：先累计的 TP/FP/FN 再算 F1，单标签多分类下等于准确率
+test/top1_acc_micro           0.3333  micro top1 准确率：argmax 命中的样本占比
 ```
-
-（数值随 checkpoint 变化，仅作格式示例。）
 
 ## 开发方式
 
