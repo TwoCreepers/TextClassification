@@ -33,8 +33,8 @@ uv run ml-prepare-thucnews --source data/THUCNews --output data/processed/THUCNe
 dotnet run -c Release --project tools/thucnews-dedup -- prep data/THUCNews data/processed/THUCNews --overwrite
 uv run ml-train --config ml/config/config.toml
 uv run ml-test  --config ml/config/config.toml --split test
-uv run ml-test  --config ml/config/config.toml --split val --checkpoint lightning_logs/byte_film/version_13/checkpoints/best.ckpt
-uv run ml-test  --config ml/config/config.toml --checkpoint lightning_logs/byte_film/version_13/checkpoints/last.ckpt
+uv run ml-test  --config ml/config/config.toml --split val --checkpoint lightning_logs/byte_film/version_9999/checkpoints/best.ckpt
+uv run ml-test  --config ml/config/config.toml --checkpoint lightning_logs/byte_film/version_9999/checkpoints/last.ckpt
 uv run ml-infer --config ml/config/config.toml "一段文本"
 ```
 
@@ -58,16 +58,16 @@ TensorBoard 日志与 checkpoint 写在 `lightning_logs/byte_film/version_*/`，
 | `f1_micro` | 先累计所有类别的 TP / FP / FN 再算 F1，等价于逐样本统计；单标签多分类下等于准确率 |
 | `top1_acc_micro` | top1（argmax）命中的样本占比。准确率报 micro 就是常用的整体正确率（macro 会变成"各类召回的均值"，类别不均衡时含义不同） |
 
-输出形如：
+输出形如（数字和 checkpoint 路径都是瞎写的，只用来对齐输出格式，不是任何一次真实训练的结果）：
 
 ```text
 === test 集评测 ===
-checkpoint: lightning_logs\byte_film\version_13\checkpoints\best.ckpt
+checkpoint: lightning_logs\byte_film\version_9999\checkpoints\best.ckpt
 
-test/loss                     0.7549  交叉熵（按样本加权平均）
-test/f1_macro                 0.9034  macro F1：先按类别算 F1 再算术平均，每个类别同权
-test/f1_micro                 0.9184  micro F1：先累计的 TP/FP/FN 再算 F1，单标签多分类下等于准确率
-test/top1_acc_micro           0.9184  micro top1 准确率：argmax 命中的样本占比
+test/loss                     9.8765  交叉熵（按样本加权平均）
+test/f1_macro                 0.1111  macro F1：先按类别算 F1 再算术平均，每个类别同权
+test/f1_micro                 0.2222  micro F1：先累计的 TP/FP/FN 再算 F1，单标签多分类下等于准确率
+test/top1_acc_micro           0.3333  micro top1 准确率：argmax 命中的样本占比
 
 选择模型看 val/f1_macro（训练时 ModelCheckpoint 的 monitor）；测试集只用来汇报，不参与调参。
 ```
@@ -152,16 +152,15 @@ data/processed/THUCNews/
 
 ### 去重通道（`just prep-dedup`，需要 dotnet）
 
-THUCNews 里同一篇稿子被反复抓取的情况不少（模板化的行情表、四六级预测卷、新浪调查页）：逐字节完全
-相同的有 1,116 篇，SimHash 相似度 > 0.9 的近重复涉及 27,542 篇。**`just prep` 不做去重**，要干净
-训练集就走这条通道：
+THUCNews 里同一篇稿子被反复抓取的情况不少（模板化的行情表、四六级预测卷、新浪调查页）：近重复
+（SimHash 相似度 > 0.9）有约 2.7 万篇。**`just prep` 不做去重**，要干净训练集就走这条通道：
 
-1. 把 83.6 万篇一次读进内存（2.09 GiB，按 1 GiB 分块存放，绕开 .NET 单个数组 2^31 的上限）；
+1. 把全部文档一次读进内存（2.09 GiB，按 1 GiB 分块存放，绕开 .NET 单个数组 2^31 的上限）；
 2. 逐篇算 64 位 SimHash（去空白后的字符 3-gram，唯一 trigram 权重）；
 3. 先按完全相同的 hash 合并（m 篇同稿只需 m 次并查集，不再产生 C(m,2) 对），再对剩下的 hash 做 LSH：
    7 个重叠 16 位窗口分桶，**桶内配对 + 1-bit 邻桶配对**，覆盖所有汉明距离 ≤ 6（相似度 > 0.9）的文档对，
    并查集聚类，**每簇只留编号最小的一篇**；
-4. 剩下的 819,228 篇再按分类各自洗牌、8:1:1 划分，写出 pack。
+4. 剩下的文档再按分类各自洗牌、8:1:1 划分，写出 pack。
 
 > **为什么 1-bit 邻桶不能省。** 一对 hash 若有 d 个差异位，每个差异位最多落进 2 个窗口；要让 7 个窗口
 > 每个都至少含 1 个差异位，需要 ≥14 次「窗口 × 差异位」命中，而 d ≤ 6 最多只有 12 次 —— 所以必然存在
@@ -171,17 +170,6 @@ THUCNews 里同一篇稿子被反复抓取的情况不少（模板化的行情�
 
 先去重再划分（而不是先划分再去重）是为了让去重后的样本仍然均匀落在三个集合里 —— 先划分的话，
 被去掉的重复稿会集中在某些分类/集合，比例会被拉歪。
-
-当前磁盘上那份就是这条通道的产物（819,228 篇，去掉 16,847 篇 / 2.0%）：
-
-| split | 篇数 |
-| --- | ---: |
-| train | 655,376 |
-| val | 81,916 |
-| test | 81,936 |
-
-> 表里这份是旧行为（跨类簇仍保留一篇）的产物；按现在的默认（整簇丢弃）重跑，篇数会再少一些，
-> 减少量等于 `dedup.cross_class.clusters`。
 
 去重方法与统计写在 `dataset_info.json` 的 `dedup` 字段：
 
@@ -311,3 +299,7 @@ THUCNews 里同一篇稿子被反复抓取的情况不少（模板化的行情�
 - **EMA**：`[ema] enabled` 挂上 Lightning 自带的 `EMAWeightAveraging` callback（`decay` 默认
   0.999、`use_buffers = false` 只平均参数），验证与 checkpoint 都用平均后的权重；`ml-test` /
   `ml-infer` 载入的正是这份 EMA 权重。
+- **早停**：`[early_stopping] enabled` 挂 Lightning 的 `EarlyStopping`（`monitor` 默认
+  `val/f1_macro`、`mode = max`，与 `best.ckpt` 同一个指标同一个方向），连续 `patience` 个 epoch
+  的提升都没超过 `min_delta` 就结束训练。触发时 `best.ckpt` 已是历史最优，早停只省掉后面的
+  epoch、不会让模型变差。
