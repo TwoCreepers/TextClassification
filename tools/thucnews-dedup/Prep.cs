@@ -10,7 +10,6 @@ using System.Text.Json.Nodes;
 internal static class Prep
 {
     private const string InfoName = "dataset_info.json";
-    private const int MaxDistance = 6;
     private static readonly string[] Splits = { "train", "val", "test" };
 
     private sealed class SplitMix64
@@ -42,6 +41,12 @@ internal static class Prep
         bool dropCrossClass = true)
     {
         var timer = Stopwatch.StartNew();
+        if (workers <= 0)
+        {
+            Console.Error.WriteLine($"并发数必须 >= 1，收到 {workers}");
+            return 1;
+        }
+
         var sourceDir = new DirectoryInfo(source);
         if (!sourceDir.Exists)
         {
@@ -134,39 +139,24 @@ internal static class Prep
             _ => { });
         Console.WriteLine($"SimHash: {timer.Elapsed.TotalSeconds:F1}s");
 
-        // ---- 去重：每簇保留“分类 + 编号”最小的那篇；跨类簇整簇丢弃 ----
+        // ---- 去重：每簇保留编号最小的那篇；跨类簇整簇丢弃 ----
         var keep = new bool[count];
         Array.Fill(keep, true);
         var clusters = 0;
-        var pairs = 0;
+        var candidates = 0L;
+        var identicalPairs = 0L;
         var crossClass = (Mask: Array.Empty<bool>(), Clusters: 0L, Documents: 0L);
         if (dedup)
         {
-            var duplicatePairs = PackDedup.BuildPairs(hashes);
-            pairs = duplicatePairs.Count;
-            var parent = new int[count];
-            for (var i = 0; i < count; i++)
-            {
-                parent[i] = i;
-            }
-
-            foreach (var pair in duplicatePairs)
-            {
-                var a = (int)(pair >> 32);
-                var b = (int)(pair & 0xFFFFFFFF);
-                var rootA = Find(parent, a);
-                var rootB = Find(parent, b);
-                if (rootA != rootB)
-                {
-                    parent[rootB] = rootA;
-                }
-            }
+            var parent = Lsh.BuildClusters(hashes, out var lshStats);
+            candidates = lshStats.Candidates;
+            identicalPairs = lshStats.IdenticalPairs;
 
             var best = new int[count];
             Array.Fill(best, -1);
             for (var i = 0; i < count; i++)
             {
-                var root = Find(parent, i);
+                var root = UnionFind.Find(parent, i);
                 if (best[root] < 0 || i < best[root])
                 {
                     best[root] = i;
@@ -198,7 +188,7 @@ internal static class Prep
             }
 
             Console.WriteLine(
-                $"去重: 近重复对 {pairs}，簇 {clusters}，保留 {keep.Count(v => v)} / {count}，{timer.Elapsed.TotalSeconds:F1}s");
+                $"去重: 候选比较 {candidates:N0}，完全重复 {identicalPairs:N0} 对，簇 {clusters}，保留 {keep.Count(v => v)} / {count}，{timer.Elapsed.TotalSeconds:F1}s");
             Console.WriteLine(
                 $"跨类重复: {crossClass.Clusters} 簇 / {crossClass.Documents} 篇，"
                 + (dropCrossClass ? "已整簇丢弃" : "保留（--keep-cross-class）")
@@ -323,11 +313,13 @@ internal static class Prep
             ["dedup"] = new JsonObject
             {
                 ["enabled"] = dedup,
-                ["method"] = $"simhash64(字符3-gram, 唯一 trigram 权重)，相似度 > 0.9（汉明距离 <= {MaxDistance}）",
+                ["method"] = $"simhash64(字符3-gram, 唯一 trigram 权重)，汉明距离 <= {Lsh.MaxDistance}"
+                             + "（16-bit×7 窗口 + 1-bit 邻桶多探针，覆盖完整）",
                 ["policy"] = dedup && dropCrossClass
                     ? "每个近重复簇保留编号最小的一篇；跨类簇整簇丢弃"
                     : "每个近重复簇保留编号最小的一篇",
-                ["pairs"] = pairs,
+                ["candidates"] = candidates,
+                ["identical_pairs"] = identicalPairs,
                 ["clusters"] = clusters,
                 ["dropped"] = count - keep.Count(v => v),
                 ["cross_class"] = new JsonObject
@@ -478,16 +470,5 @@ internal static class Prep
         var left = int.TryParse(Path.GetFileNameWithoutExtension(a.Name), out var x) ? x : -1;
         var right = int.TryParse(Path.GetFileNameWithoutExtension(b.Name), out var y) ? y : -1;
         return left.CompareTo(right);
-    }
-
-    private static int Find(int[] parent, int index)
-    {
-        while (parent[index] != index)
-        {
-            parent[index] = parent[parent[index]];
-            index = parent[index];
-        }
-
-        return index;
     }
 }

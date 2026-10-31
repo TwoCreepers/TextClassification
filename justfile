@@ -34,6 +34,7 @@ prep-dedup:
     dotnet run -c Release --project tools/thucnews-dedup -- prep data/THUCNews data/processed/THUCNews --overwrite
 
 # 对已有的 pack 再补一次去重（跨类簇同样整簇丢弃；先去重后划分的产物不需要，重复执行是幂等的）。
+# 想先看会去掉多少篇、不落盘：dotnet run -c Release --project tools/thucnews-dedup -- dedup-pack data/processed/THUCNews 12 --dry-run
 dedup:
     dotnet run -c Release --project tools/thucnews-dedup -- dedup-pack data/processed/THUCNews 12
 
