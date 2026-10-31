@@ -4,7 +4,8 @@
 83.6 万篇）上对比两个共用同一条链路的模型——
 
 - `first_token`：只取第一个字节过一层线性层的极简基线，用来打通数据 / 训练 / 评测链路；
-- `byte_film`：`ByteFiLM-DenseNet`，纯 dense 连接 + latent query 注意力 + FiLM 调制 V。
+- `byte_film`：`ByteFiLM-DenseNet`，纯 dense 连接 + latent query 注意力 + FiLM 调制 V；
+  静态记忆前还可选一层逐通道残差卷积（`[arch] kv_conv_enabled`）。
 
 超参集中在 `ml/config/config.toml`；模型结构与实现细节见 [`ml/README.md`](ml/README.md)。
 
@@ -13,7 +14,7 @@
 | 路径 | 说明 |
 | --- | --- |
 | `ml/` | 训练工程：数据预处理、模型、训练 / 评测 / 推理入口（细节见 [`ml/README.md`](ml/README.md)） |
-| `ml/config/config.toml` | 所有超参与开关（数据、模型、优化器、EMA、日志、Trainer、编译） |
+| `ml/config/config.toml` | 所有超参与开关（数据、模型、优化器、调度、EMA、早停、日志、Trainer、编译） |
 | `packages/FishEdTorchBaseLib/` | 内部 PyTorch 模块库 `fishetbl`（`NormAct` / `FiLM` / `TokenAttention` / `ChannelRmsNorm` 等） |
 | `justfile` | 常用配方：`just train` / `just test` / `just infer` / `just prep` / `just prep-dedup` / `just lint` / `just cslint` |
 | `pyproject.toml` | uv workspace 根，成员是 `ml` 与 `packages/FishEdTorchBaseLib` |

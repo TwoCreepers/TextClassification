@@ -229,15 +229,16 @@ THUCNews 里同一篇稿子被反复抓取的情况不少（模板化的行情�
 | `model.py` | 基线模型 `ByteFirstTokenClassifier`（继承 `BaseTensorModule`） |
 | `byte_film.py` | `ByteFiLMDenseNet`：latent query 注意力 + dense 增宽 + FiLM 调制 V |
 | `module.py` | Lightning 包装 `ByteClassifierModule`：指标集合、padding mask、`torch.compile`、优化器 / 调度 |
-| `compilation.py` | `torch.compile` 相关的 dynamo 开关（编译自动求导、标量追踪） |
+| `compilation.py` | `torch.compile` 的 dynamo 开关（编译自动求导、标量追踪），以及 `[compile] backend` 的校验 |
 | `train.py` | 训练入口 `train()`；同时提供 `ml-test` / `ml-infer` 共用的组装函数（DataModule、主模型、checkpoint 定位与载入） |
 | `test.py` | `ml-test`：载入 checkpoint，在验证集或测试集上评测并打印指标 |
 | `infer.py` | `ml-infer`：文本 -> 全部分类的 softmax 概率（降序），支持 `--json` |
 
 ## 架构（`[model] arch = "byte_film"`）
 
-1. byte 嵌入 + `RMSNorm -> MLP(GELU)` 得到 K / V；**只有 K** 过 RoPE。该 MLP 可用
-   `[arch] mlp_hidden` 加隐藏层（如 `[64, 128]` 即 `d -> 64 -> 128 -> d`），`[]` 表示保持单层；
+1. byte 嵌入 →（可选）逐通道残差卷积 → `RMSNorm -> MLP(GELU)` 得到 K / V；**只有 K** 过
+   RoPE。MLP 可用 `[arch] mlp_hidden` 加隐藏层（如 `[64, 128]` 即 `d -> 64 -> 128 -> d`），
+   `[]` 表示保持单层；
 2. 可学习 latent query 对 `(K, V)` 做注意力，得到 `(B, n_q*d_v, 1)` 的单 token 特征；
 3. T 轮：`m` 个 dense block 纯 cat 增宽 → 用当前特征生成 Q、FiLM 调制 V、逐位置 `v_mix`
    → 注意力输出再 cat 回特征，宽度只增不减；`[arch] modulate_v = false` 时跳过 FiLM 与
@@ -254,6 +255,28 @@ THUCNews 里同一篇稿子被反复抓取的情况不少（模板化的行情�
 之前各有一处 dropout，四处互相独立：`[arch] q_gen_dropout` / `dense_block_dropout` /
 `film_dropout` / `head_dropout`（`0` 表示关闭；`modulate_v = false` 时 `film_dropout` 不生效）。
 
+### k / v 分支的残差卷积（`[arch] kv_conv_enabled`）
+
+默认关闭；打开后在 byte 嵌入与 `mlp_k` / `mlp_v` 之间各插一层 `x + GELU(Norm(Conv(x)))`：
+
+- 卷积是**逐通道**的（`groups = C`）：每个通道各自在长度方向做一维卷积，只看邻域、不混通道，
+  参数量约为通道混合版的 `1/C`。核长 / 膨胀率由 `[arch] kv_conv_kernel_size` /
+  `kv_conv_dilation` 控制、k 与 v 共用，感受野是 `(kernel_size - 1) * dilation + 1` 个字节。
+- 归一化位置与 `mlp()` 一致，由 `[arch] pre_norm` 统一控制（见下）。
+- 实现上按 `(B, C, 1, L)` 走 2d 卷积而不是 `Conv1d`：inductor 对 1d 卷积反向会把序列长度
+  固化成静态值（20 个不同长度时第 9 个就撞 `recompile_limit`，`fullgraph=True` 直接失败），
+  2d 版本 20/20 通过、只编 3 张图。所以变长补齐 + `inductor` 照常可用，不用换 backend，
+  也不用 `pad_to_max_length = true`。
+- 关掉时不建任何参数，`state_dict` 与没有这一层时完全一致；打开会新增参数，旧 checkpoint
+  需要重新训练。
+
+### pre-norm（`[arch] pre_norm`）
+
+默认 `false`：`mlp()`（`mlp_k` / `mlp_v` / `q_gen` / `v_mix`）与上面的残差卷积都是「先映射、
+再 RMSNorm」（`norm_pos = "after map"`）。改成 `true` 则一起变成「先 RMSNorm、再映射」
+（`"before map"`），两处的归一化位置始终一致。`dense_block` / `compress` 本来就固定 pre-norm，
+不受这一项影响；切换会改变 `q_gen` 等处的归一化通道数（从输出宽度变成输入宽度），需要重新训练。
+
 ## 约定
 
 - **byte 词表**：token id 即 UTF-8 字节值，`0` 号 token 兼作 padding（正常文本几乎不会出现 `0x00`）。
@@ -266,12 +289,16 @@ THUCNews 里同一篇稿子被反复抓取的情况不少（模板化的行情�
   新长度都会重编译、`fullgraph=True` 下还会撞 `recompile_limit` 直接失败。`max_length = -1` 时没有
   固定长度可补，`pad_to_max_length` 不生效，一律变长补齐。变长补齐时通道 MLP 走
   `MlpNormAct1d(mapper_type="linear")`（内部 `nn.Linear` 而非 1x1 `Conv1d`）：inductor 会把 1d 卷积
-  反向的符号长度固化成具体值，导致每个新长度都重编译。
+  反向的符号长度固化成具体值，导致每个新长度都重编译；k / v 的残差卷积同理（改成 2d 实现，
+  见上文「k / v 分支的残差卷积」）。
 - **F1 / top1 准确率**：只在验证集与测试集上算，指标名写明平均方式——`val/f1_macro`、`test/f1_macro`
   （macro F1，checkpoint 的 monitor）、`f1_micro`（micro F1）、`top1_acc_micro`（micro top1
   准确率）。训练集不算指标；测试集只由 `ml-test` 手动触发，训练过程不碰（见「评测」）。
 - **编译**：`[compile] enabled` 控制是否对主模型 forward 做 `torch.compile(fullgraph=True)`，
   `compiled_autograd` / `capture_scalar_outputs` 分别对应编译自动求导与 `.item()` 标量追踪；
+  `backend` 选编译引擎——`inductor`（默认，真正生成 Triton / C++ kernel，需要 C++ 编译器）、
+  `aot_eager`（走 dynamo + AOTAutograd 但算子仍是 eager，不需要编译器，常用来验证"图能不能编"
+  或绕开 inductor 的问题）、`eager`（最轻的兜底）；名字拼错在启动阶段就报错并列出可选值；
   动态形状由"输入是否定长"自动决定（`max_length` 会截断且 `pad_to_max_length` 打开才是定长），
   不单独配置（`ml-infer` 固定关掉编译）。
 - **学习率调度**：`[scheduler] name` 为 `none` 时 lr 恒定，为 `cosine` 时按 epoch 余弦退火到

@@ -102,12 +102,14 @@ class ArchConfig:
     head_dropout: float = 0.0
     attention_dropout: float = 0.0
     film_identity_init: bool = True
-    # mlp_k / mlp_v 之后各接一个残差卷积层（k、v 共用这一组配置）：
-    # ``x + GELU(Conv1d(RMSNorm(x)))``，归一化位置跟随 ``pre_norm``、与 ``mlp()`` 一致。
+    # byte 嵌入之后、mlp_k / mlp_v 之前各接一个逐通道残差卷积层（k、v 共用这一组配置）：
+    # ``x + GELU(Norm(Conv(x)))``，卷积按通道独立（``groups = C``），只在长度方向混合邻域、
+    # 不混通道，参数量约为通道混合版的 ``1 / C``；归一化位置跟随 ``pre_norm``、与 ``mlp()`` 一致。
     # 关闭时不建任何参数，state_dict 与没有这一层时完全一致。
     kv_conv_enabled: bool = False
     # 卷积核长度与膨胀率：``kernel_size > 1`` 才有邻域感受野，``dilation > 1`` 在不增加
-    # 参数量的前提下继续放大感受野。二者都必须 >= 1；核长取奇数时 ``padding="same"`` 最快。
+    # 参数量的前提下继续放大感受野；感受野为 ``(kernel_size - 1) * dilation + 1`` 个字节。
+    # 二者都必须 >= 1；核长取奇数时 ``padding="same"`` 最快。
     kv_conv_kernel_size: int = 3
     kv_conv_dilation: int = 1
     # 是否预归一化（pre-norm）：True 时 ``mlp()``（mlp_k / mlp_v / q_gen / v_mix）与上面的

@@ -42,9 +42,9 @@ def classification_metrics(num_classes: int) -> MetricCollection:
 class ByteClassifierModule(pl.LightningModule):
     """训练包装，真正的计算都在主模型（``arch`` 决定是哪个）里。
 
-    训练步只返回 loss、不做任何日志操作（日志由 :class:`ml.callbacks.LossLoggingCallback`
-    在 step 之外完成），这样 ``torch.compile(fullgraph=True)`` 的前反向图不会被日志打断。
-    F1 与 top1 准确率只在验证集与测试集上计算，指标名见 :func:`classification_metrics`。
+    训练步只做「前向 + 交叉熵」，日志（``train/loss``）在本步末尾用 ``self.log`` 记成 epoch 级
+    汇总；``torch.compile`` 只包住主模型的 ``forward``，所以日志本身不进编译图、不会把前反向图
+    切断。F1 与 top1 准确率只在验证集与测试集上计算，指标名见 :func:`classification_metrics`。
 
     Note:
         训练入口不会调用 ``trainer.test``：测试集只留给 ``ml-test`` 手动评测，免得它被当成
