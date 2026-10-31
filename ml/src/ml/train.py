@@ -16,7 +16,7 @@ from typing import Any
 
 import pytorch_lightning as pl
 import torch
-from pytorch_lightning.callbacks import Callback, EMAWeightAveraging, ModelCheckpoint
+from pytorch_lightning.callbacks import Callback, EarlyStopping, EMAWeightAveraging, ModelCheckpoint
 from pytorch_lightning.loggers import TensorBoardLogger
 
 from fishetbl.base.BaseModule import BaseTensorModule
@@ -149,6 +149,16 @@ def build_trainer(cfg: Config) -> pl.Trainer:
     * ``best.ckpt``：``val/f1_macro`` 最好的那个 epoch，评测 / 推理默认用它；
     * ``last.ckpt``：最后一个 epoch（``save_last=True``），用于看训练结束时的状态，
       或在被打断后接着跑。
+
+    ``[early_stopping] enabled = true`` 时再挂一个 ``EarlyStopping``：默认盯
+    ``val/f1_macro``（和 ``best.ckpt`` 同一指标、同一方向），连续 ``patience`` 个 epoch
+    提升不超过 ``min_delta`` 就提前结束。早停只缩短训练，不会覆盖 ``best.ckpt``——
+    触发那一刻最优权重早就存好了，所以结果是"训练更省时"，不是"模型更好"。
+
+    Note:
+        早停 + ``cosine`` 调度要注意：余弦周期按 ``max_epochs`` 算，若在 epoch N 就停了，
+        lr 只退火到 N/max_epochs 的位置，最后一段的低 lr 精调就没跑过。想两者兼得，
+        把 ``max_epochs`` 设到"希望收敛的 epoch 数"附近，让早停只当保险丝。
     """
     callbacks: list[Callback] = [
         ModelCheckpoint(
@@ -159,6 +169,9 @@ def build_trainer(cfg: Config) -> pl.Trainer:
             filename="best",
         ),
     ]
+    if cfg.early_stopping.enabled:
+        es = cfg.early_stopping
+        callbacks.append(EarlyStopping(monitor=es.monitor, mode=es.mode, patience=es.patience, min_delta=es.min_delta))
     if cfg.ema.enabled:
         # Lightning 自带的 EMA：验证会用到平均后的权重，checkpoint 里存的也是 EMA 权重。
         callbacks.append(EMAWeightAveraging(decay=cfg.ema.decay, use_buffers=cfg.ema.use_buffers))
@@ -174,6 +187,25 @@ def build_trainer(cfg: Config) -> pl.Trainer:
         logger=build_logger(cfg),
         callbacks=callbacks,
     )
+
+
+def find_early_stopping(trainer: pl.Trainer) -> EarlyStopping | None:
+    """从 Trainer 的回调里挑出真正触发过的那个 ``EarlyStopping``。
+
+    Lightning 的 ``EarlyStopping`` 默认 ``verbose=False``：早停触发时训练会直接结束、
+    一行日志都不打，看起来就像"训练莫名少跑了几十个 epoch"。这里把触发信息捞出来交给
+    :func:`train` 记一条日志。
+
+    Args:
+        trainer: 已经 ``fit`` 完的 Trainer。
+
+    Returns:
+        触发了早停的 callback；没触发（跑满 ``max_epochs``）或没启用时返回 ``None``。
+    """
+    for callback in trainer.early_stopping_callbacks:
+        if getattr(callback, "stopping_reason_message", None):
+            return callback
+    return None
 
 
 def train(argv: list[str] | None = None) -> None:
@@ -195,9 +227,24 @@ def train(argv: list[str] | None = None) -> None:
     trainer = build_trainer(cfg)
 
     trainer.fit(module, datamodule=datamodule)
+    stopped = find_early_stopping(trainer)
+    # fit 回来后 current_epoch 已自增到"跑完的 epoch 数"：跑满 max_epochs 时等于 max_epochs，
+    # 早停时等于 stopped_epoch + 1，所以两种情况统一用它。
+    epochs_done = trainer.current_epoch
+    if stopped is not None:
+        LOGGER.info(
+            "早停：epoch %d 触发（连续 %d 个 epoch 的 %s 没超过 min_delta=%g），共跑了 %d 个 epoch；%s",
+            stopped.stopped_epoch,
+            cfg.early_stopping.patience,
+            cfg.early_stopping.monitor,
+            cfg.early_stopping.min_delta,
+            epochs_done,
+            stopped.stopping_reason_message,
+        )
     LOGGER.info(
-        "训练结束：best.ckpt（val/f1_macro 最优）与 last.ckpt（最后一个 epoch）在 "
+        "训练结束（共 %d 个 epoch）：best.ckpt（val/f1_macro 最优）与 last.ckpt（最后一个 epoch）在 "
         "%s/%s/version_*/checkpoints/；测试集请用 `uv run ml-test` 单独评测",
+        epochs_done,
         cfg.logger.save_dir,
         cfg.logger.name,
     )

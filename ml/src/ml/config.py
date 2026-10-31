@@ -151,6 +151,35 @@ class EMAConfig:
     use_buffers: bool = False
 
 
+type EarlyStoppingModeType = Literal["min", "max"]
+
+
+@dataclass(frozen=True)
+class EarlyStoppingConfig:
+    """早停配置（Lightning 自带的 ``EarlyStopping`` callback）。
+
+    默认按 ``val/f1_macro``（与 ``best.ckpt`` 同一个指标、同一个方向）判断，连续
+    ``patience`` 个 epoch 没有提升就结束训练。触发时 ``best.ckpt`` 里仍是历史最优
+    权重，早停只省掉后面的 epoch，不会让模型变差。
+    """
+
+    enabled: bool = False
+    # 要监控的日志键：必须是 ``on_epoch=True`` 记下来的指标（如 ``val/f1_macro``、``val/loss``）。
+    monitor: str = "val/f1_macro"
+    # 监控方向：``f1_macro`` 越大越好用 ``max``；损失越小越好用 ``min``。
+    mode: EarlyStoppingModeType = "max"
+    # 连续多少个 epoch 没有提升就停（Lightning 的 patience 语义：只要提升 > min_delta 就清零重算）。
+    patience: int = 10
+    # 提升小于这个量级就不算提升（绝对值），用来滤掉验证集抖动带来的"假提升"。
+    min_delta: float = 1e-4
+
+    def __post_init__(self) -> None:
+        if self.patience < 1:
+            raise ValueError(f"[early_stopping] patience 必须 >= 1，当前 {self.patience}")
+        if self.min_delta < 0:
+            raise ValueError(f"[early_stopping] min_delta 必须 >= 0，当前 {self.min_delta}")
+
+
 @dataclass(frozen=True)
 class LoggerConfig:
     """TensorBoard 日志配置。"""
@@ -203,6 +232,7 @@ class Config:
     optim: OptimConfig
     scheduler: SchedulerConfig
     ema: EMAConfig
+    early_stopping: EarlyStoppingConfig
     logger: LoggerConfig
     trainer: TrainerConfig
     compile: CompileConfig
@@ -228,6 +258,7 @@ def load_config(path: str | Path) -> Config:
         optim=_build(OptimConfig, raw, "optim"),
         scheduler=_build(SchedulerConfig, raw, "scheduler"),
         ema=_build(EMAConfig, raw, "ema"),
+        early_stopping=_build(EarlyStoppingConfig, raw, "early_stopping"),
         logger=_build(LoggerConfig, raw, "logger"),
         trainer=_build(TrainerConfig, raw, "trainer"),
         compile=_build(CompileConfig, raw, "compile"),

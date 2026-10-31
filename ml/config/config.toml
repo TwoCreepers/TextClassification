@@ -89,6 +89,30 @@ decay = 0.999
 # false = 只平均参数，不动 buffer（如 BN 的 running stats）。
 use_buffers = false
 
+[early_stopping]
+# 是否启用早停（Lightning 的 EarlyStopping callback）。代码里的默认值是关闭，这份配置打开它：
+# 只省掉收敛之后的 epoch，不会改变 best.ckpt 的内容。
+enabled = true
+# 监控的指标：与 best.ckpt 用同一个（val/f1_macro），这样"停在哪"和"存了哪个"是一致的。
+# 不要改成 val/loss 却留在 max：val/loss 是越小越好，方向弄反就永不触发（或立刻触发）。
+monitor = "val/f1_macro"
+mode = "max"
+# 连续多少个 epoch 没提升就停。取 10 的依据是 lightning_logs/byte_film/version_0 的真实曲线：
+# 63 个 epoch（0..62）里，val/f1_macro 的最优值出现在 epoch 37（0.9016），而两次真实提升
+# 之间的最长间隔只有 3 个 epoch（epoch 31 -> 34，中间 32/33 都在抖），10 是该间隔的 3 倍多，
+# 足够穿过噪声、又不会白白多跑。按那条曲线，patience = 10 会在 epoch 47 触发（37 + 10），
+# 比手工跑到 63 省 16 个 epoch，比 max_epochs = 100 省掉一半以上。
+patience = 10
+# 提升小于这个量就不算提升，用来滤掉验证集抖动。真实曲线在平台段（epoch >= 26）逐 epoch 的
+# |Δf1| 中位数是 2.8e-4、最大 1.2e-3，所以 1e-4 低于噪声、能把抖动挡在外面；
+# 不要加到 1e-3：那会把 epoch 31~37 之间 3e-4 ~ 5e-4 的真实小提升也算成"没提升"，
+# 于是在 epoch 31 就误停，丢掉 0.0009 的 f1。
+min_delta = 1e-4
+# 注意与 [scheduler] cosine 的相互作用：余弦周期按 [trainer] max_epochs 算，若早停在 epoch 47
+# 触发，lr 只从 8e-3 退火到约 4.8e-3，最后那段低 lr 精调等于没跑。真实曲线在 epoch 35 之后
+# 验证 loss 单调抬升（0.7506 -> 0.7570），说明高 lr 下已无收益；若想让退火完整跑完，
+# 把 [trainer] max_epochs 调到 50 左右，让早停退化成保险丝而不是主开关。
+
 [logger]
 # TensorBoard：日志与 checkpoint 都在 save_dir/name/version_* 下。
 save_dir = "lightning_logs"
@@ -97,7 +121,7 @@ log_graph = false
 
 [trainer]
 seed = 42
-max_epochs = 100
+max_epochs = 50
 accelerator = "auto"
 devices = 1
 # precision = "32-true"
