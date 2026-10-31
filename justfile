@@ -8,7 +8,7 @@ default:
 
 # 用 ml/config/config.toml 训练（只训练 + 验证，不碰测试集；TensorBoard 日志写在 lightning_logs/）。
 train:
-    uv run ml-train --config ml/config/config.toml
+    $Env:TRITON_DEFAULT_FP_FUSION = "1"; uv run ml-train --config ml/config/config.toml
 
 # 在测试集上评测最新一次训练的 best.ckpt（两个位置参数：split、checkpoint）。
 #   just test        # 最新一次训练的 best.ckpt + test 集

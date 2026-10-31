@@ -8,6 +8,7 @@ from torch.optim import lr_scheduler
 from torchmetrics import MetricCollection
 from torchmetrics.classification import MulticlassAccuracy, MulticlassF1Score
 
+from .compilation import resolve_backend
 from .config import Config
 from .data import PAD_TOKEN_ID, fixed_padding_length
 
@@ -70,8 +71,10 @@ class ByteClassifierModule(pl.LightningModule):
             # 动态形状跟着补齐方式走：只有「会截断 + pad_to_max_length」才有恒定形状；
             # 变长补齐（含 max_length=-1 不截断）必须开动态，否则每个新 (B, L) 都会重编译，
             # fullgraph=True 下还会撞 recompile_limit 直接失败；固定补齐保持静态最快。
+            # 编译引擎由 [compile] backend 选（inductor / aot_eager / eager ...）。
             torch.compile(
                 model.forward,
+                backend=resolve_backend(cfg.compile.backend),
                 fullgraph=cfg.compile.fullgraph,
                 dynamic=fixed_padding_length(cfg.data) is None,
             )

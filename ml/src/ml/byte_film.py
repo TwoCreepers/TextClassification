@@ -2,7 +2,7 @@
 
 结构（全部通道优先，latent 特征恒为 ``(B, C, 1)``）：
 
-1. 静态记忆：byte 嵌入 -> ``mlp`` -> **仅 K** 加 RoPE，V 不过；
+1. 静态记忆：byte 嵌入 -> ``mlp`` ->（可选）残差卷积 -> **仅 K** 加 RoPE，V 不过；
 2. 初始聚合：可学习 latent query 对 ``(K, V)`` 做注意力，得到 ``(B, n_q*d_v, 1)``；
 3. T 轮：若干 dense block 纯 cat 增宽 -> 生成 ``Q`` +（可选）FiLM 调制 V + 逐位置 ``v_mix``
    -> 注意力输出再 cat 回特征，宽度只增不减；每 ``compress_every_rounds`` 轮把主干宽度压到
@@ -16,6 +16,13 @@ Dropout：主干特征在送入 ``q_gen``、每个 ``dense_block``、``film``（
 宽度：``d0 = n_q * d_v``，每轮增宽 ``blocks_per_round * d_block + n_q * d_v``，
 压缩点上除以 ``compress_denominator``（下限 ``d0``，最后一轮之后不压），压缩后的实际宽度
 作为 ``d_final``。
+
+k / v 分支：``[arch] kv_conv_enabled = true`` 时在 ``mlp_k`` / ``mlp_v`` 之后各接一个
+残差卷积 ``x + GELU(Norm(Conv(x)))``（核长 / 膨胀率由 ``kv_conv_kernel_size`` /
+``kv_conv_dilation`` 配置，k、v 共用；k 侧在 RoPE 之前）。卷积内部按 ``(B, C, 1, L)`` 用
+2d 卷积实现，为的是躲开 inductor 对 1d 卷积反向的静态形状固化（见 :class:`_Conv2dAs1d`）。
+归一化位置由 ``[arch] pre_norm`` 统一控制：``true`` 时 ``mlp()`` 与这个卷积都用
+``norm_pos="before map"``（pre-norm）。
 
 Note:
     通道映射统一用 ``MlpNormAct1d(mapper_type="linear")``（``nn.Linear`` 而非 1x1
@@ -36,6 +43,7 @@ from fishetbl.module import (
     FiLM,
     MlpNormAct1d,
     NormAct,
+    NormPosType,
     RotaryPositionEmbedding,
     TokenAttention,
     TokenEmbedding,
@@ -44,21 +52,104 @@ from fishetbl.module import (
 from .config import ArchConfig
 
 
-def mlp(width_in: int, width_out: int, hidden: Sequence[int] = ()) -> NormAct:
-    """逐位置的 ``RMSNorm -> MLP(GELU)``（不做残差 / 拼接）。
+def mlp(width_in: int, width_out: int, hidden: Sequence[int] = (), norm_pos: NormPosType = "after map") -> NormAct:
+    """逐位置的 ``Norm -> MLP(GELU)``（不做残差 / 拼接）。
 
     Args:
         width_in: 输入通道数。
         width_out: 输出通道数。
         hidden: 中间隐藏层宽度数组；``(64, 128)`` 表示 ``width_in -> 64 -> 128 ->
             width_out``，空数组表示直接 ``width_in -> width_out`` 单层。
+        norm_pos: 归一化相对映射的位置，由 ``[arch] pre_norm`` 经 :func:`resolve_norm_pos` 决定。
     """
     widths = (width_in, *hidden, width_out)
     return MlpNormAct1d(
         widths=widths,
+        norm_pos=norm_pos,
         act="gelu",
         post_process=NormAct.IdentityPostModule,
         mapper_type="linear",
+    )
+
+
+def resolve_norm_pos(arch: ArchConfig) -> NormPosType:
+    """把 ``[arch] pre_norm`` 映射成 :class:`NormAct` 的 ``norm_pos``。
+
+    ``mlp()`` 与 :func:`kv_residual_conv` 共用这一个取值，两者的归一化位置因此始终一致。
+    """
+    return "before map" if arch.pre_norm else "after map"
+
+
+class _Conv2dAs1d(nn.Module):
+    """用 2d 卷积实现序列（长度维）卷积：``(B, C, L)`` -> ``(B, C, 1, L)`` -> 卷积 -> squeeze。
+
+    与同核长的 ``Conv1d`` 数学等价（权重 ``(C, C, ks)`` 对应 ``(C, C, 1, ks)``，实测逐元素
+    误差 0），差别只在 ``torch.compile``：``Conv1d`` 的反向会把长度固化成静态值，20 个不同
+    长度下第 9 个就撞 ``recompile_limit``（``fullgraph=True`` 直接失败）；这个 2d 实现
+    20/20 通过、只编 3 张图。开销略高（``B=32, C=16, L=512`` 上约 +7% eager、+12% inductor，
+    小通道数时主要来自 kernel 启动，真实模型会摊薄）。
+
+    Args:
+        channels: 输入输出通道数（残差要求相等）。
+        kernel_size: 序列维上的核长；取奇数时 ``padding="same"`` 不必额外补零拷贝。
+        dilation: 序列维上的膨胀率。
+    """
+
+    def __init__(self, channels: int, kernel_size: int, dilation: int) -> None:
+        super().__init__()
+        self.conv = nn.Conv2d(
+            channels,
+            channels,
+            kernel_size=(1, kernel_size),
+            dilation=(1, dilation),
+            padding="same",
+        )
+
+    def forward(self, x: Tensor) -> Tensor:
+        return self.conv(x.unsqueeze(-2)).squeeze(-2)
+
+
+def kv_residual_conv(channels: int, arch: ArchConfig) -> NormAct | None:
+    """``mlp_k`` / ``mlp_v`` 之后的残差卷积层：``x + GELU(Norm(Conv(x)))``。
+
+    归一化与激活和 ``mlp()`` 统一（RMSNorm + GELU），归一化位置也跟 ``mlp()`` 一起由
+    ``[arch] pre_norm`` 决定；``padding="same"`` 保证长度不变，残差才加得回去。
+    卷积本身由 :class:`_Conv2dAs1d` 实现（内部走 2d 卷积）。
+
+    Args:
+        channels: 输入输出通道数（必须相等才能残差）；``d_k`` 或 ``d_v``。
+        arch: 架构超参，用 ``kv_conv_enabled`` / ``kv_conv_kernel_size`` / ``kv_conv_dilation``。
+
+    Returns:
+        ``kv_conv_enabled`` 为 ``False`` 时返回 ``None``（不建参数，调用方直接跳过）。
+
+    Raises:
+        ValueError: 核长或膨胀率小于 1。
+
+    Note:
+        卷积刻意用 2d 实现而不是 ``Conv1d``：inductor 对 ``Conv1d`` 的反向会把序列长度
+        固化成静态值（20 个不同长度里第 9 个就撞 ``recompile_limit``，``fullgraph=True``
+        直接失败），``Conv2d`` 则全程符号形状（同样 20 个长度只编 3 张图、20/20 通过）。
+        所以这一层在 ``pad_to_max_length = false`` + ``compile.enabled = true`` 下也能用，
+        不必换 backend、也不必定长补齐；代价只是卷积本身慢一点，见 :class:`_Conv2dAs1d`。
+    """
+    if not arch.kv_conv_enabled:
+        return None
+    kernel_size = arch.kv_conv_kernel_size
+    dilation = arch.kv_conv_dilation
+    if kernel_size < 1:
+        raise ValueError(f"[arch] kv_conv_kernel_size 必须 >= 1，收到 {kernel_size}")
+    if dilation < 1:
+        raise ValueError(f"[arch] kv_conv_dilation 必须 >= 1，收到 {dilation}")
+    return NormAct(
+        mapper=_Conv2dAs1d(channels, kernel_size, dilation),
+        norm=ChannelRmsNorm(channels),
+        norm_pos=resolve_norm_pos(arch),
+        act=nn.GELU(),
+        act_pos="after map",
+        # 残差放在激活之后：x + GELU(conv(norm(x)))，而不是 GELU(conv(norm(x)) + x)。
+        post_process=NormAct.ResidualPostModule,
+        post_process_pos="finally",
     )
 
 
@@ -145,7 +236,7 @@ class _Iteration(nn.Module):
             dropout(arch.dense_block_dropout, "dense_block_dropout") for _ in range(arch.blocks_per_round)
         )
         width_out = width_in + arch.blocks_per_round * arch.d_block
-        self.q_gen = mlp(width_out, arch.n_q * arch.d_k)
+        self.q_gen = mlp(width_out, arch.n_q * arch.d_k, norm_pos=resolve_norm_pos(arch))
         self.q_gen_drop = dropout(arch.q_gen_dropout, "q_gen_dropout")
         # FiLM 调制 + 逐位置 v_mix：只在 modulate_v 打开时存在。
         self.film: FiLM | None = None
@@ -153,7 +244,7 @@ class _Iteration(nn.Module):
         self.film_drop: nn.Dropout | None = None
         if arch.modulate_v:
             self.film = FiLM(width_out, arch.d_v, identity_init=arch.film_identity_init)
-            self.v_mix = mlp(arch.d_v, arch.d_v)
+            self.v_mix = mlp(arch.d_v, arch.d_v, norm_pos=resolve_norm_pos(arch))
             self.film_drop = dropout(arch.film_dropout, "film_dropout")
         self.attn = TokenAttention(arch.n_q, arch.d_k, arch.d_v, dropout=arch.attention_dropout)
 
@@ -188,8 +279,11 @@ class ByteFiLMDenseNet(BaseTensorModule):
 
         self.embed_k = TokenEmbedding(vocab_size, arch.d_k)
         self.embed_v = TokenEmbedding(vocab_size, arch.d_v)
-        self.mlp_k = mlp(arch.d_k, arch.d_k, hidden=arch.mlp_hidden)
-        self.mlp_v = mlp(arch.d_v, arch.d_v, hidden=arch.mlp_hidden)
+        self.mlp_k = mlp(arch.d_k, arch.d_k, hidden=arch.mlp_hidden, norm_pos=resolve_norm_pos(arch))
+        self.mlp_v = mlp(arch.d_v, arch.d_v, hidden=arch.mlp_hidden, norm_pos=resolve_norm_pos(arch))
+        # 残差卷积紧跟各自的 mlp（k 侧在 RoPE 之前），关掉时为 None 且不建参数。
+        self.k_conv = kv_residual_conv(arch.d_k, arch)
+        self.v_conv = kv_residual_conv(arch.d_v, arch)
         self.rope = RotaryPositionEmbedding(head_dim=arch.d_k)
 
         self.latent_q = nn.Parameter(empty(1, arch.n_q * arch.d_k, 1))
@@ -236,9 +330,13 @@ class ByteFiLMDenseNet(BaseTensorModule):
             ``(B, num_classes)`` 的 logits。
         """
         k = self.mlp_k(self.embed_k(input_ids))  # (B, d_k, L)
+        if self.k_conv is not None:
+            k = self.k_conv(k)  # 残差卷积：形状不变，仍在 RoPE 之前
         k = rearrange(k, "b c l -> b l c")
         k = rearrange(self.rope(k), "b l c -> b c l")  # 仅 K 带位置相位
         v_base = self.mlp_v(self.embed_v(input_ids))  # (B, d_v, L)
+        if self.v_conv is not None:
+            v_base = self.v_conv(v_base)
 
         query = self.latent_q.expand(input_ids.shape[0], -1, -1)  # (B, n_q*d_k, 1)
         x = self.attn(query, k, v_base, padding_mask)

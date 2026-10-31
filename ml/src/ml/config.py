@@ -102,6 +102,18 @@ class ArchConfig:
     head_dropout: float = 0.0
     attention_dropout: float = 0.0
     film_identity_init: bool = True
+    # mlp_k / mlp_v 之后各接一个残差卷积层（k、v 共用这一组配置）：
+    # ``x + GELU(Conv1d(RMSNorm(x)))``，归一化位置跟随 ``pre_norm``、与 ``mlp()`` 一致。
+    # 关闭时不建任何参数，state_dict 与没有这一层时完全一致。
+    kv_conv_enabled: bool = False
+    # 卷积核长度与膨胀率：``kernel_size > 1`` 才有邻域感受野，``dilation > 1`` 在不增加
+    # 参数量的前提下继续放大感受野。二者都必须 >= 1；核长取奇数时 ``padding="same"`` 最快。
+    kv_conv_kernel_size: int = 3
+    kv_conv_dilation: int = 1
+    # 是否预归一化（pre-norm）：True 时 ``mlp()``（mlp_k / mlp_v / q_gen / v_mix）与上面的
+    # 残差卷积都改用 ``norm_pos="before map"``（先 RMSNorm 再映射），False 保持默认的
+    # ``"after map"``（先映射再 RMSNorm）。dense_block / compress 本来就固定 pre-norm，不受影响。
+    pre_norm: bool = False
 
 
 @dataclass(frozen=True)
@@ -216,9 +228,20 @@ class CompileConfig:
         动态形状不在这里配置，由数据是否定长自动决定（``pad_to_max_length`` 且 ``max_length``
         会截断时为定长）：变长补齐必须开动态形状（否则每个新 ``(B, L)`` 都会重编译，
         ``fullgraph=True`` 下还会撞 ``recompile_limit`` 直接失败）；固定补齐则保持静态形状最快。
+
+        编译引擎（``backend``）在这里选：``inductor`` 最快但依赖 C++ 编译器，``aot_eager``
+        不需要编译器、也不受 inductor 对 1d 卷积动态形状的限制，``eager`` 是最轻的兜底。
     """
 
     enabled: bool = True
+    # torch.compile 的「编译引擎」（torch 叫 backend）：
+    #   "inductor"  - 默认，真正生成 Triton / C++ kernel；需要 C++ 编译器（Windows 上是 cl.exe）。
+    #   "aot_eager" - 走 dynamo + AOTAutograd 但算子仍用 eager 实现，不需要 C++ 编译器，
+    #                 常用来验证「图能不能编」或绕开 inductor 的问题。
+    #   "eager"     - dynamo 只捕获图、直接按 eager 执行，最快的兜底。
+    # 也可以填 torch 支持的其他名字（如 "cudagraphs"）；拼错时启动（configure_compilation）就会
+    # 报错并列出可选值，不用等到第一个 batch。
+    backend: str = "inductor"
     fullgraph: bool = True
     compiled_autograd: bool = True
     capture_scalar_outputs: bool = True

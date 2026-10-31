@@ -61,6 +61,25 @@ head_dropout = 0
 attention_dropout = 0.3
 # FiLM 初始化为恒等调制（gamma=1, beta=0）。
 film_identity_init = true
+# mlp_k / mlp_v 之后各接一个残差卷积层（k、v 共用这一组配置）：
+#   x + GELU(Norm(Conv(x)))，归一化位置跟随下面的 pre_norm、与 mlp 一致；
+#   k 侧的卷积在 RoPE 之前。关闭时不建任何参数，state_dict 与不打开时完全一致，
+#   已有 checkpoint 照常能载入；打开会新增参数，旧 checkpoint 需要重新训练。
+# 卷积内部按 (B, C, 1, L) 用 2d 卷积实现（与 1d 卷积数学等价、逐元素误差 0），
+# 因为 inductor 对 1d 卷积的反向会把序列长度固化成静态值：实测 20 个不同长度时，
+# Conv1d 在第 9 个就撞 recompile_limit（fullgraph=True 直接失败），2d 实现 20/20 通过、
+# 只编 3 张图。所以打开它不需要换 [compile] backend、也不需要 pad_to_max_length = true，
+# 变长补齐 + inductor 照常可用；代价是卷积本身慢约一成（小通道数下以启动开销为主）。
+kv_conv_enabled = true
+# 卷积核长度 / 膨胀率，都必须 >= 1：kernel_size > 1 才有邻域感受野，dilation > 1 在不增加
+# 参数量的前提下继续放大感受野。核长取奇数时 padding="same" 不必额外补零拷贝，最快。
+kv_conv_kernel_size = 3
+kv_conv_dilation = 3
+# 是否预归一化（pre-norm）：true 时 mlp()（mlp_k / mlp_v / q_gen / v_mix）与上面的残差卷积
+# 都改用 norm_pos = "before map"（先 RMSNorm 再映射），false 保持默认的 "after map"。
+# 注意 pre_norm = true 会改变 norm 的通道数（q_gen 的 norm 从输出宽度变成输入宽度），
+# 同样需要重新训练；dense_block / compress 本来就固定 pre-norm，不受这一项影响。
+pre_norm = false
 
 [optim]
 lr = 8e-3
@@ -137,6 +156,14 @@ limit_test_batches = 1.0
 [compile]
 # 是否启用 torch.compile（主模型 forward，fullgraph=True）。
 enabled = true
+# 编译引擎（torch.compile 的 backend）：
+#   "inductor"  - 默认，真正生成 Triton / C++ kernel（最快）；需要 C++ 编译器，
+#                 Windows 上要能找到 cl.exe（VS 的 x64 Native Tools 命令行里就有）。
+#   "aot_eager" - 走 dynamo + AOTAutograd，但算子仍用 eager 实现；不需要 C++ 编译器，
+#                 常用来确认「图能不能编」，也用来绕开 inductor 在 1d 卷积之类算子上的毛病。
+#   "eager"     - dynamo 只捕获图、直接按 eager 执行，最省事的兜底。
+# 也接受 torch 认识的其他名字（如 "cudagraphs"）；拼错时启动阶段就会报错并列出可选值。
+backend = "inductor"
 fullgraph = true
 # 动态形状不在这里配置：由 [data] pad_to_max_length 自动决定
 # （固定补齐 -> 静态形状，一次编译；变长补齐 -> 动态形状，避免每个长度都重编译）。
