@@ -1,7 +1,7 @@
 from . import tensor
 from .ChannelLinear import ChannelLinear
 from .ChannelRmsNorm import ChannelRmsNorm
-from .ConvNormAct import ConvNormActRes, ConvNormResAct, NormConvActRes, NormConvResAct
+from .Conv import ConvNormActRes, ConvNormResAct, NormConvActRes, NormConvResAct
 from .Horizontal import Horizontal
 from .Identity import Identity
 from .LambdaModule import LambdaModule
