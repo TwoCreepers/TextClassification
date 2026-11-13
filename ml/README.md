@@ -1,7 +1,7 @@
 # ml
 
 THUCNews 字节级文本分类的训练框架：主模型可选 `first_token` 基线（只看第一个 byte token 过一层
-`nn.Linear`）或 `byte_film`（ByteFiLM-DenseNet：单 token 特征递归 + FiLM 调制 V + 纯 dense 连接）。
+`nn.Linear`）或 `byte_dense`（ByteDenseNet：单 token 特征递归 + 纯 dense 连接）。
 训练、验证、指标与日志交给 PyTorch Lightning；评测与推理复用同一个 Lightning 模块与同一份配置。
 
 ## 命令
@@ -33,12 +33,12 @@ uv run ml-prepare-thucnews --source data/THUCNews --output data/processed/THUCNe
 dotnet run -c Release --project tools/thucnews-dedup -- prep data/THUCNews data/processed/THUCNews --overwrite
 uv run ml-train --config ml/config/config.toml
 uv run ml-test  --config ml/config/config.toml --split test
-uv run ml-test  --config ml/config/config.toml --split val --checkpoint lightning_logs/byte_film/version_9999/checkpoints/best.ckpt
-uv run ml-test  --config ml/config/config.toml --checkpoint lightning_logs/byte_film/version_9999/checkpoints/last.ckpt
+uv run ml-test  --config ml/config/config.toml --split val --checkpoint lightning_logs/byte_dense/version_9999/checkpoints/best.ckpt
+uv run ml-test  --config ml/config/config.toml --checkpoint lightning_logs/byte_dense/version_9999/checkpoints/last.ckpt
 uv run ml-infer --config ml/config/config.toml "一段文本"
 ```
 
-TensorBoard 日志与 checkpoint 写在 `lightning_logs/byte_film/version_*/`，用
+TensorBoard 日志与 checkpoint 写在 `lightning_logs/byte_dense/version_*/`，用
 `uv run tensorboard --logdir lightning_logs` 查看。
 
 ## 评测（`ml-test`）
@@ -62,7 +62,7 @@ TensorBoard 日志与 checkpoint 写在 `lightning_logs/byte_film/version_*/`，
 
 ```text
 === test 集评测 ===
-checkpoint: lightning_logs\byte_film\version_9999\checkpoints\best.ckpt
+checkpoint: lightning_logs\byte_dense\version_9999\checkpoints\best.ckpt
 
 test/loss                     9.8765  交叉熵（按样本加权平均）
 test/f1_macro                 0.1111  macro F1：先按类别算 F1 再算术平均，每个类别同权
@@ -215,33 +215,32 @@ THUCNews 里同一篇稿子被反复抓取的情况不少（模板化的行情�
 | `preprocess.py` | 纯 Python 预处理（`ml-prepare-thucnews`）：8:1:1 切分 + 生成顺序字节 pack，不含去重 |
 | `data.py` | `THUCNewsDataset`（mmap 顺序字节 pack）、`pad_byte_sequences` / `collate_byte_batch`、`ByteClassificationDataModule` |
 | `model.py` | 基线模型 `ByteFirstTokenClassifier`（继承 `BaseTensorModule`） |
-| `byte_film.py` | `ByteFiLMDenseNet`：latent query 注意力 + dense 增宽 + FiLM 调制 V |
+| `byte_dense.py` | `ByteDenseNet`：latent query 注意力 + dense 增宽 |
 | `module.py` | Lightning 包装 `ByteClassifierModule`：指标集合、padding mask、`torch.compile`、优化器 / 调度 |
 | `compilation.py` | `torch.compile` 的 dynamo 开关（编译自动求导、标量追踪），以及 `[compile] backend` 的校验 |
 | `train.py` | 训练入口 `train()`；同时提供 `ml-test` / `ml-infer` 共用的组装函数（DataModule、主模型、checkpoint 定位与载入） |
 | `test.py` | `ml-test`：载入 checkpoint，在验证集或测试集上评测并打印指标 |
 | `infer.py` | `ml-infer`：文本 -> 全部分类的 softmax 概率（降序），支持 `--json` |
 
-## 架构（`[model] arch = "byte_film"`）
+## 架构（`[model] arch = "byte_dense"`）
 
 1. byte 嵌入 →（可选）逐通道残差卷积 → `RMSNorm -> MLP(GELU)` 得到 K / V；**只有 K** 过
    RoPE。MLP 可用 `[arch] mlp_hidden` 加隐藏层（如 `[64, 128]` 即 `d -> 64 -> 128 -> d`），
    `[]` 表示保持单层；
 2. 可学习 latent query 对 `(K, V)` 做注意力，得到 `(B, n_q*d_v, 1)` 的单 token 特征；
-3. T 轮：`m` 个 dense block 纯 cat 增宽 → 用当前特征生成 Q、FiLM 调制 V、逐位置 `v_mix`
-   → 注意力输出再 cat 回特征，宽度只增不减；`[arch] modulate_v = false` 时跳过 FiLM 与
-   `v_mix`，每轮直接复用静态 V。每 `compress_every_rounds` 轮用 `RMSNorm + ChannelLinear`
-   把主干宽度压到当前的 `1/compress_denominator`（下限 `n_q*d_v`，最后一轮之后不压）；
-   `compress_denominator` 可以是 int（所有压缩点共用）或数组（按压缩点顺序取，如 `[2, 4]`），
-   取值 >= 1，填 `1` 表示该压缩点不压（恒等映射）；
+3. T 轮：`m` 个 dense block 纯 cat 增宽 → 用当前特征生成 Q → 注意力输出再 cat 回特征，
+   宽度只增不减，V 每轮直接复用静态值。每 `compress_every_rounds` 轮用
+   `RMSNorm + ChannelLinear` 把主干宽度压到当前的 `1/compress_denominator`（下限 `n_q*d_v`，
+   最后一轮之后不压）；`compress_denominator` 可以是 int（所有压缩点共用）或数组（按压缩点
+   顺序取，如 `[2, 4]`），取值 >= 1，填 `1` 表示该压缩点不压（恒等映射）；
 4. 分类头：`Dropout + RMSNorm + 1x1 Conv`。
 
 宽度为 `d0 = n_q*d_v`，每轮增宽 `m*d_block + n_q*d_v`，压缩点上除以 `compress_denominator`，
 压缩后的实际宽度即 `d_final`；超参都在 `[arch]` 段。
 
-主干特征在送入 `q_gen`、每个 `dense_block`、`film`（作为条件）以及分类头（`head_norm` 之前）
-之前各有一处 dropout，四处互相独立：`[arch] q_gen_dropout` / `dense_block_dropout` /
-`film_dropout` / `head_dropout`（`0` 表示关闭；`modulate_v = false` 时 `film_dropout` 不生效）。
+主干特征在送入 `q_gen`、每个 `dense_block` 以及分类头（`head_norm` 之前）之前各有一处
+dropout，三处互相独立：`[arch] q_gen_dropout` / `dense_block_dropout` / `head_dropout`
+（`0` 表示关闭）。
 
 ### k / v 分支的残差卷积（`[arch] kv_conv_enabled`）
 
@@ -250,7 +249,8 @@ THUCNews 里同一篇稿子被反复抓取的情况不少（模板化的行情�
 - 卷积是**逐通道**的（`groups = C`）：每个通道各自在长度方向做一维卷积，只看邻域、不混通道，
   参数量约为通道混合版的 `1/C`。核长 / 膨胀率由 `[arch] kv_conv_kernel_size` /
   `kv_conv_dilation` 控制、k 与 v 共用，感受野是 `(kernel_size - 1) * dilation + 1` 个字节。
-- 归一化位置与 `mlp()` 一致，由 `[arch] pre_norm` 统一控制（见下）。
+- 归一化位置与 `mlp()` 一致，由 `[arch] pre_norm` 统一控制（见下）：`false` 用
+  `ConvNormActRes`，`true` 用 `NormConvActRes`。
 - 实现上按 `(B, C, 1, L)` 走 2d 卷积而不是 `Conv1d`：inductor 对 1d 卷积反向会把序列长度
   固化成静态值（20 个不同长度时第 9 个就撞 `recompile_limit`，`fullgraph=True` 直接失败），
   2d 版本 20/20 通过、只编 3 张图。所以变长补齐 + `inductor` 照常可用，不用换 backend，
@@ -260,10 +260,11 @@ THUCNews 里同一篇稿子被反复抓取的情况不少（模板化的行情�
 
 ### pre-norm（`[arch] pre_norm`）
 
-默认 `false`：`mlp()`（`mlp_k` / `mlp_v` / `q_gen` / `v_mix`）与上面的残差卷积都是「先映射、
-再 RMSNorm」（`norm_pos = "after map"`）。改成 `true` 则一起变成「先 RMSNorm、再映射」
-（`"before map"`），两处的归一化位置始终一致。`dense_block` / `compress` 本来就固定 pre-norm，
-不受这一项影响；切换会改变 `q_gen` 等处的归一化通道数（从输出宽度变成输入宽度），需要重新训练。
+默认 `false`：`mlp()`（`mlp_k` / `mlp_v` / `q_gen`）用 `MlpNormGelu`、上面的残差卷积用
+`ConvNormActRes`，都是「先映射、再 RMSNorm」。改成 `true` 则换成 `NormMlpGelu` /
+`NormConvActRes`，一起变成「先 RMSNorm、再映射」，两处的归一化位置始终一致。
+`dense_block` / `compress` 固定 pre-norm，不受这一项影响；切换会改变 `q_gen` 等处的归一化
+通道数（从输出宽度变成输入宽度），需要重新训练。
 
 ## 约定
 
@@ -276,7 +277,7 @@ THUCNews 里同一篇稿子被反复抓取的情况不少（模板化的行情�
   编译一次），关则只补到 batch 内最长序列（变长，`dynamic` 自动切到 `True`，不单独配置），否则每个
   新长度都会重编译、`fullgraph=True` 下还会撞 `recompile_limit` 直接失败。`max_length = -1` 时没有
   固定长度可补，`pad_to_max_length` 不生效，一律变长补齐。变长补齐时通道 MLP 走
-  `MlpNormAct1d(mapper_type="linear")`（内部 `nn.Linear` 而非 1x1 `Conv1d`）：inductor 会把 1d 卷积
+  `MlpNormGelu` / `NormMlpGelu`（内部 `ChannelLinear`，即 `nn.Linear` 而非 1x1 `Conv1d`）：inductor 会把 1d 卷积
   反向的符号长度固化成具体值，导致每个新长度都重编译；k / v 的残差卷积同理（改成 2d 实现，
   见上文「k / v 分支的残差卷积」）。
 - **F1 / top1 准确率**：只在验证集与测试集上算，指标名写明平均方式——`val/f1_macro`、`test/f1_macro`

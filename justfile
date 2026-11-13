@@ -13,7 +13,7 @@ train:
 # 在测试集上评测最新一次训练的 best.ckpt（两个位置参数：split、checkpoint）。
 #   just test        # 最新一次训练的 best.ckpt + test 集
 #   just test val    # 换成验证集
-#   just test test lightning_logs/byte_film/version_13/checkpoints/last.ckpt
+#   just test test lightning_logs/byte_dense/version_13/checkpoints/last.ckpt
 test split="test" checkpoint="":
     uv run ml-test --config ml/config/config.toml --split {{split}} {{ if checkpoint != "" { "--checkpoint " + quote(checkpoint) } else { "" } }}
 

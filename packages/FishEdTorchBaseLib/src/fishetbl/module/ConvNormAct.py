@@ -1,170 +1,78 @@
-from typing import Literal
+from typing import override
 
-from torch import device, dtype, nn
-from torch.nn.utils.parametrizations import weight_norm
+from torch import Tensor
 
-from ..typing.alias import ActStrType, Map, Size2d, TensorMap
-from ..utils._act import build_activation
-from .ChannelRmsNorm import ChannelRmsNorm
-from .NormAct import ActPosType, NormAct, NormPosType, PostModule, PostModuleBuilder, PostProcessPosType
+from ..base.BaseModule import BaseTensorModule
+from ..typing.alias import TensorMap
 
 
-def ConvNormAct1d(
-    in_c: int,
-    out_c: int,
-    ks: int,
-    stride: int = 1,
-    padding: Literal["valid", "same"] | int = "same",
-    padding_mode: Literal["zeros", "reflect", "replicate", "circular"] = "zeros",
-    dilation: int = 1,
-    groups: int = 1,
-    bias: bool | None = None,
-    is_norm_weight: bool = False,
-    init_conv_weight: Map[[nn.Conv1d], nn.Conv1d] | None = None,
-    norm: TensorMap | Literal["bn", "in", "rms"] | None = "rms",
-    norm_pos: NormPosType = "after map",
-    act: TensorMap | ActStrType | None = "relu",
-    act_pos: ActPosType = "after map",
-    post_process: PostModule | PostModuleBuilder = NormAct.ResidualPostModule,
-    post_process_pos: PostProcessPosType = "before act or invalid",
-    device: device | None = None,
-    dtype: dtype | None = None,
-) -> NormAct:
-    """构造在序列通道维上做一维卷积的 :class:`NormAct`（``(N, C, L)`` 进 ``(N, C', L')``）。
+class _ConvActBase(BaseTensorModule):
+    """各 Conv 变体的公共构造：持有 ``conv`` / ``norm`` / ``act`` 三个模块。
 
-    与 :func:`ConvNormAct2d` 同一套参数与权重处理方式，只是把 2d 换成 1d。
-    ``padding="same"`` 配 ``stride=1`` 时输出长度与输入相同，因此当 ``in_c == out_c``
-    时可以把 ``post_process`` 设成 :attr:`NormAct.ResidualPostModule` 做残差。
-    ``padding="same"`` 且核长为偶数（配奇膨胀率）时 PyTorch 会警告并要求零填充拷贝，
-    想要满速就把 ``ks`` 取奇数。
+    ``conv`` 是任意通道映射（如 :class:`torch.nn.Conv1d` / :class:`torch.nn.Conv2d` /
+    ``byte_dense`` 里的 ``_Conv2dAs1d``），``norm`` / ``act`` 是现成模块。归一化与激活的
+    相对位置由各子类的 ``forward`` 直接写死，不再有 ``norm_pos`` / ``act_pos`` /
+    ``post_process`` 这类参数：
+
+    * :class:`ConvNormActRes`：``Conv -> Norm -> Act -> 残差``，即 ``x + act(norm(conv(x)))``；
+    * :class:`NormConvActRes`：``Norm -> Conv -> Act -> 残差``，即 ``x + act(conv(norm(x)))``；
+    * :class:`ConvNormResAct`：``Conv -> Norm -> 残差 -> Act``，即 ``act(x + norm(conv(x)))``；
+    * :class:`NormConvResAct`：``Norm -> Conv -> 残差 -> Act``，即 ``act(x + conv(norm(x)))``。
 
     Args:
-        in_c: 输入通道数。
-        out_c: 输出通道数。
-        ks: 卷积核长度。
-        stride: 卷积步长。
-        padding: ``"same"`` 保持长度（等价于按 ``dilation * (ks - 1)`` 对称补齐）、
-            ``"valid"`` 不补、或直接给一个整数。
-        padding_mode: 补零之外的其他填充方式，仅 ``padding`` 为数字时生效。
-        dilation: 膨胀率（空洞卷积的间隔）；``> 1`` 时感受野变大而参数量不变。
-        groups: 分组卷积的组数。
-        bias: 是否使用偏置。``None`` 时跟随 ``norm``：``"bn"`` / ``"in"`` 默认
-            ``False``，其余默认 ``True``。
-        is_norm_weight: 是否对卷积施加 ``weight_norm``。
-        init_conv_weight: 对卷积调用的权重初始化函数。
-        norm: 归一化。字符串 ``"bn"`` / ``"in"`` / ``"rms"`` 按需构建，也可直接传模块，
-            ``None`` 表示不做归一化。
-        norm_pos: 归一化相对卷积的位置；通道数按 ``in_c`` / ``out_c`` 取。
-        act: 激活，字符串或模块，``None`` 表示不使用激活。
-        act_pos: 激活相对卷积的位置。
-        post_process: 残差 / 拼接等后处理模块或其构造函数。
-        post_process_pos: 后处理相对激活的位置。
-        device: 模块参数所在设备。
-        dtype: 模块参数数据类型。
-
-    Returns:
-        由上述组件组装而成的 :class:`NormAct` 模块。
+        conv: 卷积模块，输入输出都应是通道优先的 ``(B, C, ...)``。
+        norm: 归一化模块，通道数需与它在流水线中的位置一致。
+        act: 激活模块。
     """
-    norm_c = in_c if norm_pos == "before map" else out_c
-    if norm == "bn":
-        norm = nn.BatchNorm1d(norm_c, device=device, dtype=dtype)
-        if bias is None:
-            bias = False
-    elif norm == "in":
-        norm = nn.InstanceNorm1d(norm_c, affine=True, device=device, dtype=dtype)
-        if bias is None:
-            bias = False
-    elif norm == "rms":
-        norm = ChannelRmsNorm(norm_c, device=device, dtype=dtype)
 
-    if bias is None:
-        bias = True
-
-    conv = nn.Conv1d(
-        in_channels=in_c,
-        out_channels=out_c,
-        kernel_size=ks,
-        stride=stride,
-        padding=padding,
-        padding_mode=padding_mode,
-        dilation=dilation,
-        groups=groups,
-        bias=bias,
-        device=device,
-        dtype=dtype,
-    )
-    if init_conv_weight is not None:
-        conv = init_conv_weight(conv)
-    if is_norm_weight:
-        conv = weight_norm(conv)
-
-    act = (
-        build_activation(act, in_c if act_pos == "before map" else out_c, device, dtype)
-        if isinstance(act, str)
-        else act
-    )
-
-    return NormAct(conv, norm, norm_pos, act, act_pos, post_process, post_process_pos)
+    def __init__(self, conv: TensorMap, norm: TensorMap, act: TensorMap) -> None:
+        super().__init__()
+        self.conv = conv
+        self.norm = norm
+        self.act = act
 
 
-def ConvNormAct2d(
-    in_c: int,
-    out_c: int,
-    ks: int | Size2d,
-    stride: int | Size2d = 1,
-    padding: Literal["valid", "same"] | int | Size2d = "same",
-    padding_mode: Literal["zeros", "reflect", "replicate", "circular"] = "zeros",
-    dilation: int | Size2d = 1,
-    groups: int = 1,
-    bias: bool | None = None,
-    is_norm_weight: bool = False,
-    init_conv_weight: Map[[nn.Conv2d], nn.Conv2d] | None = None,
-    norm: TensorMap | Literal["bn", "in", "rms"] | None = "rms",
-    norm_pos: NormPosType = "after map",
-    act: TensorMap | ActStrType | None = "relu",
-    act_pos: ActPosType = "after map",
-    post_process: PostModule | PostModuleBuilder = NormAct.ResidualPostModule,
-    post_process_pos: PostProcessPosType = "before act or invalid",
-    device: device | None = None,
-    dtype: dtype | None = None,
-) -> NormAct:
-    norm_c = in_c if norm_pos == "before map" else out_c
-    if norm == "bn":
-        norm = nn.BatchNorm2d(norm_c, device=device, dtype=dtype)
-        if bias is None:
-            bias = False
-    elif norm == "in":
-        norm = nn.InstanceNorm2d(norm_c, affine=True, device=device, dtype=dtype)
-        if bias is None:
-            bias = False
-    elif norm == "rms":
-        norm = ChannelRmsNorm(norm_c, device=device, dtype=dtype)
+class ConvNormActRes(_ConvActBase):
+    """``Conv -> Norm -> Act -> 残差``：``x + act(norm(conv(x)))``。
 
-    if bias is None:
-        bias = True
+    残差加在激活之后（不是 ``act(x + ...)``）。要求 ``conv`` 不改变形状（同通道、同长度），
+    否则残差加不回去；逐通道卷积 + ``padding="same"`` 天然满足。
+    """
 
-    conv = nn.Conv2d(
-        in_channels=in_c,
-        out_channels=out_c,
-        kernel_size=ks,
-        stride=stride,
-        padding=padding,
-        padding_mode=padding_mode,
-        dilation=dilation,
-        groups=groups,
-        bias=bias,
-        device=device,
-        dtype=dtype,
-    )
-    if init_conv_weight is not None:
-        conv = init_conv_weight(conv)
-    if is_norm_weight:
-        conv = weight_norm(conv)
+    @override
+    def forward(self, x: Tensor) -> Tensor:
+        return x + self.act(self.norm(self.conv(x)))
 
-    act = (
-        build_activation(act, in_c if act_pos == "before map" else out_c, device, dtype)
-        if isinstance(act, str)
-        else act
-    )
 
-    return NormAct(conv, norm, norm_pos, act, act_pos, post_process, post_process_pos)
+class NormConvActRes(_ConvActBase):
+    """``Norm -> Conv -> Act -> 残差``：``x + act(conv(norm(x)))``。
+
+    与 :class:`ConvNormActRes` 的区别只有归一化位置：这里先归一化再卷积，归一化模块的
+    通道数取输入通道数；后者先卷积再归一化，通道数取输出通道数。
+    """
+
+    @override
+    def forward(self, x: Tensor) -> Tensor:
+        return x + self.act(self.conv(self.norm(x)))
+
+
+class ConvNormResAct(_ConvActBase):
+    """``Conv -> Norm -> 残差 -> Act``：``act(x + norm(conv(x)))``。
+
+    残差加在激活之前（与 :class:`ConvNormActRes` 相反）。同样要求 ``conv`` 不改变形状。
+    """
+
+    @override
+    def forward(self, x: Tensor) -> Tensor:
+        return self.act(x + self.norm(self.conv(x)))
+
+
+class NormConvResAct(_ConvActBase):
+    """``Norm -> Conv -> 残差 -> Act``：``act(x + conv(norm(x)))``。
+
+    残差加在激活之前（与 :class:`NormConvActRes` 相反）。同样要求 ``conv`` 不改变形状。
+    """
+
+    @override
+    def forward(self, x: Tensor) -> Tensor:
+        return self.act(x + self.conv(self.norm(x)))

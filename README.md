@@ -4,7 +4,7 @@
 83.6 万篇）上对比两个共用同一条链路的模型——
 
 - `first_token`：只取第一个字节过一层线性层的极简基线，用来打通数据 / 训练 / 评测链路；
-- `byte_film`：`ByteFiLM-DenseNet`，纯 dense 连接 + latent query 注意力 + FiLM 调制 V；
+- `byte_dense`：`ByteDenseNet`，纯 dense 连接 + latent query 注意力；
   静态记忆前还可选一层逐通道残差卷积（`[arch] kv_conv_enabled`）。
 
 超参集中在 `ml/config/config.toml`；模型结构与实现细节见 [`ml/README.md`](ml/README.md)。
@@ -15,7 +15,7 @@
 | --- | --- |
 | `ml/` | 训练工程：数据预处理、模型、训练 / 评测 / 推理入口（细节见 [`ml/README.md`](ml/README.md)） |
 | `ml/config/config.toml` | 所有超参与开关（数据、模型、优化器、调度、EMA、早停、日志、Trainer、编译） |
-| `packages/FishEdTorchBaseLib/` | 内部 PyTorch 模块库 `fishetbl`（`NormAct` / `FiLM` / `TokenAttention` / `ChannelRmsNorm` 等） |
+| `packages/FishEdTorchBaseLib/` | 内部 PyTorch 模块库 `fishetbl`（`ConvNormActRes` / `MlpNormGelu` / `TokenAttention` / `ChannelRmsNorm` 等） |
 | `justfile` | 常用配方：`just train` / `just test` / `just infer` / `just prep` / `just prep-dedup` / `just lint` / `just cslint` |
 | `pyproject.toml` | uv workspace 根，成员是 `ml` 与 `packages/FishEdTorchBaseLib` |
 
@@ -87,7 +87,7 @@ just cslint       # dotnet format：按 SDK 风格格式化 tools/thucnews-dedup
 
 ```text
 === test 集评测 ===
-checkpoint: lightning_logs\byte_film\version_9999\checkpoints\best.ckpt
+checkpoint: lightning_logs\byte_dense\version_9999\checkpoints\best.ckpt
 
 test/loss                     9.8765  交叉熵（按样本加权平均）
 test/f1_macro                 0.1111  macro F1：先按类别算 F1 再算术平均，每个类别同权

@@ -52,7 +52,7 @@ class DataConfig:
     pin_memory: bool = False
 
 
-type ModelArchType = Literal["first_token", "byte_film"]
+type ModelArchType = Literal["first_token", "byte_dense"]
 
 
 @dataclass(frozen=True)
@@ -68,16 +68,13 @@ class ModelConfig:
 
 @dataclass(frozen=True)
 class ArchConfig:
-    """``byte_film`` 架构的超参。"""
+    """``byte_dense`` 架构的超参。"""
 
     d_k: int = 64
     d_v: int = 64
     # mlp_k / mlp_v 的中间隐藏层宽度数组：``(64, 128)`` 表示 d -> 64 -> 128 -> d；
     # 空数组表示不加隐藏层（单层 d -> d，默认）。
     mlp_hidden: Sequence[int] = ()
-    # 是否调制 V：True 时每轮用 FiLM 按当前特征调制静态 V 再逐位置 v_mix，
-    # False 时每轮直接复用未调制的 V（省掉 film / v_mix 两组参数）。
-    modulate_v: bool = True
     # 宽度压缩：每 ``compress_every_rounds`` 轮把主干宽度压到当前的
     # ``1 / compress_denominator``；``compress_every_rounds = 0`` 表示不压缩。
     # 目标宽度下限是 ``n_q * d_v``（初始宽度），避免轮数多时塌缩得过窄；
@@ -91,20 +88,18 @@ class ArchConfig:
     d_block: int = 768
     blocks_per_round: int = 2
     rounds: int = 3
-    # 主干特征的四处 dropout，互相独立（取值 [0, 1)，0 表示关闭）：
+    # 主干特征的三处 dropout，互相独立（取值 [0, 1)，0 表示关闭）：
     #   q_gen_dropout       - 送入 q_gen 之前；
     #   dense_block_dropout - 送入每个 dense block 之前；
-    #   film_dropout        - 作为条件特征送入 FiLM 之前（modulate_v = False 时不生效）；
     #   head_dropout        - 送入分类头之前（head_norm 之前）。
     q_gen_dropout: float = 0.0
     dense_block_dropout: float = 0.0
-    film_dropout: float = 0.0
     head_dropout: float = 0.0
     attention_dropout: float = 0.0
-    film_identity_init: bool = True
     # byte 嵌入之后、mlp_k / mlp_v 之前各接一个逐通道残差卷积层（k、v 共用这一组配置）：
     # ``x + GELU(Norm(Conv(x)))``，卷积按通道独立（``groups = C``），只在长度方向混合邻域、
-    # 不混通道，参数量约为通道混合版的 ``1 / C``；归一化位置跟随 ``pre_norm``、与 ``mlp()`` 一致。
+    # 不混通道，参数量约为通道混合版的 ``1 / C``；归一化位置跟随 ``pre_norm``、与 ``mlp()``
+    # 一致（分别对应 ``ConvNormActRes`` / ``NormConvActRes``）。
     # 关闭时不建任何参数，state_dict 与没有这一层时完全一致。
     kv_conv_enabled: bool = False
     # 卷积核长度与膨胀率：``kernel_size > 1`` 才有邻域感受野，``dilation > 1`` 在不增加
@@ -112,9 +107,9 @@ class ArchConfig:
     # 二者都必须 >= 1；核长取奇数时 ``padding="same"`` 最快。
     kv_conv_kernel_size: int = 3
     kv_conv_dilation: int = 1
-    # 是否预归一化（pre-norm）：True 时 ``mlp()``（mlp_k / mlp_v / q_gen / v_mix）与上面的
-    # 残差卷积都改用 ``norm_pos="before map"``（先 RMSNorm 再映射），False 保持默认的
-    # ``"after map"``（先映射再 RMSNorm）。dense_block / compress 本来就固定 pre-norm，不受影响。
+    # 是否预归一化（pre-norm）：True 时 ``mlp()``（mlp_k / mlp_v / q_gen）用 ``NormMlpGelu``、
+    # 上面的残差卷积用 ``NormConvActRes``（先 RMSNorm 再映射）；False 用 ``MlpNormGelu`` /
+    # ``ConvNormActRes``（先映射再 RMSNorm）。dense_block / compress 固定 pre-norm，不受影响。
     pre_norm: bool = False
 
 

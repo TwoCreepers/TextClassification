@@ -20,8 +20,8 @@ batch_size = 1024
 num_workers = 0
 
 [model]
-# 架构：first_token（基线，只看第一个 token）或 byte_film（ByteFiLM-DenseNet）。
-arch = "byte_film"
+# 架构：first_token（基线，只看第一个 token）或 byte_dense（ByteDenseNet）。
+arch = "byte_dense"
 # byte 词表：token id 即字节值，0 号兼作 padding。
 vocab_size = 256
 # THUCNews 共 14 个分类（财经/彩票/房产/...），类别数由数据的分类目录决定。
@@ -36,9 +36,6 @@ d_v = 16
 # mlp_k / mlp_v 的中间隐藏层宽度数组：如 [64, 128] 表示 d -> 64 -> 128 -> d；
 # 空数组 [] 表示不加隐藏层（保持单层 d -> d）。
 mlp_hidden = [32]
-# 是否调制 V：true 时每轮 FiLM 调制 V 再逐位置 v_mix；false 则每轮直接复用静态 V
-# （省掉每轮 film / v_mix 的参数）。
-modulate_v = false
 n_q = 16
 d_block = 64
 blocks_per_round = 2
@@ -49,20 +46,17 @@ rounds = 3
 # 数组长度必须 >= 压缩点个数；取值 >= 1，填 1 表示该点不压缩（恒等映射）。
 compress_every_rounds = 0
 compress_denominator = 1
-# 主干特征的四处 dropout，可分别配置（取值 [0, 1)，0 表示关闭）：
+# 主干特征的三处 dropout，可分别配置（取值 [0, 1)，0 表示关闭）：
 #   q_gen_dropout       送入 q_gen 之前
 #   dense_block_dropout 送入每个 dense block 之前
-#   film_dropout        作为条件特征送入 FiLM 之前（modulate_v = false 时不生效）
 #   head_dropout        送入分类头之前（head_norm 之前）
 q_gen_dropout = 0
 dense_block_dropout = 0
-film_dropout = 0
 head_dropout = 0
 attention_dropout = 0.3
-# FiLM 初始化为恒等调制（gamma=1, beta=0）。
-film_identity_init = true
 # byte 嵌入之后、mlp_k / mlp_v 之前各接一个逐通道残差卷积层（k、v 共用这一组配置）：
-#   x + GELU(Norm(Conv(x)))，归一化位置跟随下面的 pre_norm、与 mlp 一致；
+#   x + GELU(Norm(Conv(x)))，归一化位置跟随下面的 pre_norm、与 mlp 一致（分别用
+#   ConvNormActRes / NormConvActRes）；
 #   卷积按通道独立（groups = C），只在长度方向混合邻域、不混通道，参数量约为通道混合版的
 #   1/C；k 侧的整条链路（嵌入 -> 卷积 -> mlp）都在 RoPE 之前，卷积看到的是不带位置相位的嵌入。
 #   关闭时不建任何参数，state_dict 与不打开时完全一致，已有 checkpoint 照常能载入；
@@ -78,10 +72,11 @@ kv_conv_enabled = true
 # 核长取奇数时 padding="same" 不必额外补零拷贝，最快。
 kv_conv_kernel_size = 3
 kv_conv_dilation = 3
-# 是否预归一化（pre-norm）：true 时 mlp()（mlp_k / mlp_v / q_gen / v_mix）与上面的残差卷积
-# 都改用 norm_pos = "before map"（先 RMSNorm 再映射），false 保持默认的 "after map"。
+# 是否预归一化（pre-norm）：true 时 mlp()（mlp_k / mlp_v / q_gen）用 NormMlpGelu、上面的
+# 残差卷积用 NormConvActRes（先 RMSNorm 再映射）；false 用 MlpNormGelu / ConvNormActRes
+# （先映射再 RMSNorm）。
 # 注意 pre_norm = true 会改变 norm 的通道数（q_gen 的 norm 从输出宽度变成输入宽度），
-# 同样需要重新训练；dense_block / compress 本来就固定 pre-norm，不受这一项影响。
+# 同样需要重新训练；dense_block / compress 固定 pre-norm，不受这一项影响。
 pre_norm = false
 
 [optim]
@@ -119,7 +114,7 @@ enabled = true
 # 不要改成 val/loss 却留在 max：val/loss 是越小越好，方向弄反就永不触发（或立刻触发）。
 monitor = "val/f1_macro"
 mode = "max"
-# 连续多少个 epoch 没提升就停。取 10 的依据是 lightning_logs/byte_film/version_0 的真实曲线：
+# 连续多少个 epoch 没提升就停。取 10 的依据是 lightning_logs/byte_film/version_0（改名前的历史日志）的真实曲线：
 # 63 个 epoch（0..62）里，val/f1_macro 的最优值出现在 epoch 37（0.9016），而两次真实提升
 # 之间的最长间隔只有 3 个 epoch（epoch 31 -> 34，中间 32/33 都在抖），10 是该间隔的 3 倍多，
 # 足够穿过噪声、又不会白白多跑。按那条曲线，patience = 10 会在 epoch 47 触发（37 + 10），
@@ -138,7 +133,7 @@ min_delta = 1e-4
 [logger]
 # TensorBoard：日志与 checkpoint 都在 save_dir/name/version_* 下。
 save_dir = "lightning_logs"
-name = "byte_film"
+name = "byte_dense"
 log_graph = false
 
 [trainer]

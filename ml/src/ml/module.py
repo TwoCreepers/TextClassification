@@ -137,7 +137,7 @@ class ByteClassifierModule(pl.LightningModule):
     def configure_optimizers(self) -> OptimizerLRScheduler:
         """AdamW；在 CUDA 上用融合 kernel（CPU 不支持，自动回退）。
 
-        36.2M 参数的 byte_film 上实测 ``optimizer.step()``：默认实现 16.6 ms/step，
+        36.2M 参数的 byte_dense 上实测 ``optimizer.step()``：默认实现 16.6 ms/step，
         ``fused=True`` 5.8 ms/step —— 单个 step 的 20%~40% 花在这里。
 
         调度由 ``[scheduler] name`` 决定：``none`` 只返回优化器；``cosine`` 额外返回

@@ -21,7 +21,7 @@ from pytorch_lightning.loggers import TensorBoardLogger
 
 from fishetbl.base.BaseModule import BaseTensorModule
 
-from .byte_film import ByteFiLMDenseNet
+from .byte_dense import ByteDenseNet
 from .compilation import configure_compilation
 from .config import Config, load_config
 from .data import ByteClassificationDataModule
@@ -39,8 +39,8 @@ def build_datamodule(cfg: Config) -> ByteClassificationDataModule:
 
 def build_module(cfg: Config) -> ByteClassifierModule:
     """按 ``[model] arch`` 构建主模型并用 Lightning 模块包装。"""
-    if cfg.model.arch == "byte_film":
-        model: BaseTensorModule = ByteFiLMDenseNet(
+    if cfg.model.arch == "byte_dense":
+        model: BaseTensorModule = ByteDenseNet(
             vocab_size=cfg.model.vocab_size,
             num_classes=cfg.model.num_classes,
             arch=cfg.arch,

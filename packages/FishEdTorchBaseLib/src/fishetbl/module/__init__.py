@@ -1,13 +1,11 @@
 from . import tensor
 from .ChannelLinear import ChannelLinear
 from .ChannelRmsNorm import ChannelRmsNorm
-from .ConvNormAct import ConvNormAct1d, ConvNormAct2d
-from .FiLM import FiLM
+from .ConvNormAct import ConvNormActRes, ConvNormResAct, NormConvActRes, NormConvResAct
 from .Horizontal import Horizontal
 from .Identity import Identity
 from .LambdaModule import LambdaModule
-from .MlpNormAct import MlpNormAct1d
-from .NormAct import NormAct, NormPosType, PostModule, PostModuleBuilder
+from .Mlp import MlpNormGelu, NormMlp, NormMlpGelu, NormMlpGeluCat
 from .RotaryPositionEmbedding import RotaryPositionEmbedding
 from .TokenAttention import TokenAttention
 from .TokenEmbedding import TokenEmbedding
