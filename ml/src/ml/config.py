@@ -111,9 +111,14 @@ class ArchConfig:
     kv_conv_k_dilation: int = 1
     kv_conv_v_kernel_size: int = 3
     kv_conv_v_dilation: int = 1
+    # 是否在 kv 卷积里做归一化（k / v 各一套）：True 是 GELU(Norm(Conv(x)))（归一化位置由 pre_norm
+    # 决定），False 换成 GELU(Conv(x))（归一化层换成恒等映射，pre_norm 对这一层不再生效）。
+    kv_conv_k_norm: bool = True
+    kv_conv_v_norm: bool = True
     # 是否预归一化（pre-norm）：True 先 RMSNorm 再映射，False 先映射再 RMSNorm。
     #   mlp_k / mlp_v / q_gen：``NormMlpGelu`` / ``MlpNormGelu``（纯激活，不带残差）；
-    #   kv 卷积：              ``NormConvAct`` / ``ConvNormAct``（``act(...)``，同样不带残差）。
+    #   kv 卷积：              ``NormConvAct`` / ``ConvNormAct``（``act(...)``，同样不带残差）；
+    #                         仅在对应的 ``kv_conv_*_norm = True`` 时生效。
     # dense_block / compress 固定 pre-norm，不受影响。
     pre_norm: bool = False
 

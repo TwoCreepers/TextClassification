@@ -18,14 +18,16 @@ Dropout：主干特征在送入 ``q_gen``、每个 ``dense_block`` 以及分类�
 
 k / v 分支：``[arch] kv_conv_k_enabled`` / ``kv_conv_v_enabled`` 分别控制两侧在 byte 嵌入
 之后、``mlp_k`` / ``mlp_v`` 之前接的逐通道卷积 ``GELU(Norm(Conv(x)))``
-（``pre_norm = true`` 时是 ``GELU(Conv(Norm(x)))``；核长 / 膨胀率在 ``kv_conv_k_*`` /
+（``pre_norm = true`` 时是 ``GELU(Conv(Norm(x)))``；``kv_conv_k_norm`` /
+``kv_conv_v_norm`` 关掉归一化后是 ``GELU(Conv(x))``；核长 / 膨胀率在 ``kv_conv_k_*`` /
 ``kv_conv_v_*`` 里各配一套，两侧互不影响）：卷积按通道独立（``groups = C``），只在长度
 方向混合邻域、不混通道，参数量约为通道混合版的 ``1 / C``；k 侧因此仍在 RoPE 之前，卷积看到的
 是不带位置相位的嵌入。卷积内部按 ``(B, C, 1, L)`` 用 2d 卷积实现，为的是躲开 inductor 对 1d
 卷积反向的静态形状固化（见 :class:`_Conv2dAs1d`）。归一化位置由 ``[arch] pre_norm``
 统一控制：``true`` 时先归一化再映射（``NormMlpGelu`` / ``NormConvAct``），
-``false`` 时先映射再归一化（``MlpNormGelu`` / ``ConvNormAct``）。``mlp_k`` /
-``mlp_v`` / ``q_gen`` 与这层卷积都不带残差。
+``false`` 时先映射再归一化（``MlpNormGelu`` / ``ConvNormAct``）；卷积那侧只有在
+``kv_conv_*_norm = true`` 时才有归一化。``mlp_k`` / ``mlp_v`` / ``q_gen``
+与这层卷积都不带残差。
 
 Note:
     通道映射统一用 :class:`MlpNormGelu` / :class:`NormMlpGelu`（内部 ``ChannelLinear``，
@@ -131,6 +133,7 @@ def kv_conv(
     channels: int,
     *,
     pre_norm: bool,
+    norm: bool,
     enabled: bool,
     kernel_size: int,
     dilation: int,
@@ -138,19 +141,22 @@ def kv_conv(
 ) -> ConvNormAct | NormConvAct | None:
     """嵌入与 `mlp_k` / `mlp_v` 之间的逐通道卷积：`GELU(Norm(Conv(x)))`。
 
-    接在 byte 嵌入之后、`mlp_k` / `mlp_v` 之前（`pre_norm = false` 时是
-    `GELU(Norm(Conv(x)))`，打开 `pre_norm` 则是 `GELU(Conv(Norm(x)))`），不带残差。
-    卷积按通道独立（`groups = channels`），只在长度方向混合邻域、不混通道。归一化与激活和
-    `mlp()` 统一（RMSNorm + GELU），归一化位置也跟 `mlp()` 一起由 `[arch] pre_norm` 决定
-    （分别用 :class:`ConvNormAct` / :class:`NormConvAct`）；`padding="same"` 保证长度不变。
-    卷积本身由 :class:`_Conv2dAs1d` 实现（内部走 2d 卷积）。
+    接在 byte 嵌入之后、`mlp_k` / `mlp_v` 之前，不带残差。归一化可用
+    `[arch] kv_conv_k_norm` / `kv_conv_v_norm` 关掉：关掉时这一层是 `GELU(Conv(x))`
+    （norm 换成恒等映射，`pre_norm` 对这一层不再有影响）。卷积按通道独立
+    （`groups = channels`），只在长度方向混合邻域、不混通道；激活与 `mlp()` 统一（GELU）。
+    归一化位置跟 `mlp()` 一起由 `[arch] pre_norm` 决定（分别用 :class:`ConvNormAct` /
+    :class:`NormConvAct`）；`padding="same"` 保证长度不变。卷积本身由
+    :class:`_Conv2dAs1d` 实现（内部走 2d 卷积）。
 
-    k / v 两侧的开关、核长、膨胀率都是分开传的（配置里是 `kv_conv_k_*` / `kv_conv_v_*`）。
+    k / v 两侧的开关、是否归一化、核长、膨胀率都是分开传的（配置里是
+    `kv_conv_k_*` / `kv_conv_v_*`）。
 
     Args:
         channels: 通道数，同时也是卷积的输入 / 输出通道（逐通道卷积）；`d_k` 或 `d_v`。
         pre_norm: 归一化位置；`True` 用 :class:`NormConvAct`（先归一化再卷积），`False` 用
-            :class:`ConvNormAct`（先卷积再归一化）。
+            :class:`ConvNormAct`（先卷积再归一化）。`norm = false` 时这一项不生效。
+        norm: 是否做归一化；`False` 时把归一化层换成恒等映射，即 `GELU(Conv(x))`。
         enabled: 这一侧是否启用；`False` 时返回 `None`（不建参数，调用方直接跳过）。
         kernel_size: 长度维上的核长，必须 `>= 1`。
         dilation: 长度维上的膨胀率，必须 `>= 1`。
@@ -176,7 +182,8 @@ def kv_conv(
     if dilation < 1:
         raise ValueError(f"[arch] {name}_dilation 必须 >= 1，收到 {dilation}")
     cls = NormConvAct if pre_norm else ConvNormAct
-    return cls(_Conv2dAs1d(channels, kernel_size, dilation), ChannelRmsNorm(channels), nn.GELU())
+    norm_layer = ChannelRmsNorm(channels) if norm else nn.Identity()
+    return cls(_Conv2dAs1d(channels, kernel_size, dilation), norm_layer, nn.GELU())
 
 
 def dropout(p: float, name: str) -> nn.Dropout:
@@ -285,6 +292,7 @@ class ByteDenseNet(BaseTensorModule):
         self.k_conv = kv_conv(
             arch.d_k,
             pre_norm=arch.pre_norm,
+            norm=arch.kv_conv_k_norm,
             enabled=arch.kv_conv_k_enabled,
             kernel_size=arch.kv_conv_k_kernel_size,
             dilation=arch.kv_conv_k_dilation,
@@ -293,6 +301,7 @@ class ByteDenseNet(BaseTensorModule):
         self.v_conv = kv_conv(
             arch.d_v,
             pre_norm=arch.pre_norm,
+            norm=arch.kv_conv_v_norm,
             enabled=arch.kv_conv_v_enabled,
             kernel_size=arch.kv_conv_v_kernel_size,
             dilation=arch.kv_conv_v_dilation,
