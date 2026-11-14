@@ -33,11 +33,11 @@ use_padding_mask = true
 
 [arch]
 d_k = 16
-d_v = 32
+d_v = 16
 # mlp_k / mlp_v 的中间隐藏层宽度数组（k、v 分开配）：如 [64, 128] 表示 d -> 64 -> 128 -> d；
 # 空数组 [] 表示不加隐藏层（保持单层 d -> d）。
-mlp_k_hidden = [64]
-mlp_v_hidden = [64]
+mlp_k_hidden = [32]
+mlp_v_hidden = [32]
 n_q = 16
 d_block = 64
 blocks_per_round = 2
