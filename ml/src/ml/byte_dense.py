@@ -17,14 +17,16 @@ Dropout：主干特征在送入 ``q_gen``、每个 ``dense_block`` 以及分类�
 作为 ``d_final``。
 
 k / v 分支：``[arch] kv_conv_k_enabled`` / ``kv_conv_v_enabled`` 分别控制两侧在 byte 嵌入
-之后、``mlp_k`` / ``mlp_v`` 之前接的逐通道残差卷积 ``x + GELU(Norm(Conv(x)))``
+之后、``mlp_k`` / ``mlp_v`` 之前接的逐通道残差卷积 ``GELU(x + Norm(Conv(x)))``
 （核长 / 膨胀率在 ``kv_conv_k_*`` / ``kv_conv_v_*`` 里各配一套，两侧互不影响）：卷积按
 通道独立（``groups = C``），只在长度方向混合
 邻域、不混通道，参数量约为通道混合版的 ``1 / C``；k 侧因此仍在 RoPE 之前，卷积看到的是不带
 位置相位的嵌入。卷积内部按 ``(B, C, 1, L)`` 用 2d 卷积实现，为的是躲开 inductor 对 1d 卷积
-反向的静态形状固化（见 :class:`_Conv2dAs1d`）。归一化位置由 ``[arch] pre_norm`` 统一控制：
-``true`` 时 ``mlp()`` 与这个卷积都先归一化再映射（``NormMlpGelu`` / ``NormConvActRes``），
-``false`` 时先映射再归一化（``MlpNormGelu`` / ``ConvNormActRes``）。
+反向的静态形状固化（见 :class:`_Conv2dAs1d`）。卷积和 ``mlp_k`` / ``mlp_v`` 都是
+「先残差再激活」：``GELU(x + ...)``。归一化位置由 ``[arch] pre_norm`` 统一控制：
+``true`` 时先归一化再映射（``NormMlpResGelu`` / ``NormConvResAct``），
+``false`` 时先映射再归一化（``MlpNormResGelu`` / ``ConvNormResAct``）。
+``q_gen`` 仍然是纯激活（不带残差，``NormMlpGelu`` / ``MlpNormGelu``）。
 
 Note:
     通道映射统一用 :class:`MlpNormGelu` / :class:`NormMlpGelu`（内部 ``ChannelLinear``，
@@ -40,12 +42,14 @@ from torch.nn import init
 from fishetbl.base.BaseModule import BaseTensorModule
 from fishetbl.module import (
     ChannelRmsNorm,
-    ConvNormActRes,
+    ConvNormResAct,
     MlpNormGelu,
-    NormConvActRes,
+    MlpNormResGelu,
+    NormConvResAct,
     NormMlp,
     NormMlpGelu,
     NormMlpGeluCat,
+    NormMlpResGelu,
     RotaryPositionEmbedding,
     TokenAttention,
     TokenEmbedding,
@@ -53,23 +57,41 @@ from fishetbl.module import (
 
 from .config import ArchConfig
 
+type MlpGeluVariant = MlpNormGelu | NormMlpGelu | MlpNormResGelu | NormMlpResGelu
 
-def mlp(width_in: int, width_out: int, *hidden: int, pre_norm: bool = False) -> MlpNormGelu | NormMlpGelu:
-    """逐位置的 GELU MLP，归一化位置由 ``pre_norm`` 选类决定。
+
+def mlp(
+    width_in: int,
+    width_out: int,
+    *hidden: int,
+    pre_norm: bool = False,
+    residual: bool = False,
+) -> MlpGeluVariant:
+    """逐位置的 GELU MLP，归一化位置与残差由两个开关选类决定。
 
     Args:
         width_in: 输入通道数。
         width_out: 输出通道数。
         *hidden: 隐藏层通道数，按顺序插入；不传表示 ``width_in -> width_out`` 单层。
-        pre_norm: ``True`` 返回 :class:`NormMlpGelu`（先归一化再映射），``False`` 返回
-            :class:`MlpNormGelu`（先映射再归一化）。由 ``[arch] pre_norm`` 统一控制。
+        pre_norm: ``True`` 先归一化再映射（``Norm...`` 开头），``False`` 先映射再归一化
+            （``Mlp...`` 开头）。由 ``[arch] pre_norm`` 统一控制。
+        residual: ``True`` 在激活前先加残差（``gelu(x + ...)``，要求 ``width_in == width_out``），
+            用于 k / v 分支；``False`` 是纯激活（``gelu(norm(mlp(x)))``），用于 ``q_gen``。
 
     Returns:
-        由上述组件组装而成的模块。
+        :class:`MlpNormGelu` / :class:`NormMlpGelu` /
+        :class:`MlpNormResGelu` / :class:`NormMlpResGelu` 之一。
     """
-    if pre_norm:
-        return NormMlpGelu(width_in, width_out, *hidden, norm=ChannelRmsNorm(width_in))
-    return MlpNormGelu(width_in, width_out, *hidden, norm=ChannelRmsNorm(width_out))
+    norm = ChannelRmsNorm(width_in if pre_norm else width_out)
+    if pre_norm and residual:
+        cls = NormMlpResGelu
+    elif pre_norm:
+        cls = NormMlpGelu
+    elif residual:
+        cls = MlpNormResGelu
+    else:
+        cls = MlpNormGelu
+    return cls(width_in, width_out, *hidden, norm=norm)
 
 
 class _Conv2dAs1d(nn.Module):
@@ -113,23 +135,24 @@ def kv_residual_conv(
     kernel_size: int,
     dilation: int,
     name: str,
-) -> ConvNormActRes | NormConvActRes | None:
-    """嵌入与 `mlp_k` / `mlp_v` 之间的逐通道残差卷积：`x + GELU(Norm(Conv(x)))`。
+) -> ConvNormResAct | NormConvResAct | None:
+    """嵌入与 `mlp_k` / `mlp_v` 之间的逐通道残差卷积：`GELU(x + Norm(Conv(x)))`。
 
     接在 byte 嵌入之后、`mlp_k` / `mlp_v` 之前（`pre_norm = false` 时是
-    `x + GELU(Norm(Conv(x)))`，打开 `pre_norm` 则是 `x + GELU(Conv(Norm(x)))`）；
-    卷积按通道独立（`groups = channels`），只在长度方向混合邻域、不混通道。归一化与激活和
-    `mlp()` 统一（RMSNorm + GELU），归一化位置也跟 `mlp()` 一起由 `[arch] pre_norm`
-    决定（分别用 :class:`ConvNormActRes` / :class:`NormConvActRes`）；`padding="same"`
-    保证长度不变，残差才加得回去。卷积本身由 :class:`_Conv2dAs1d` 实现（内部走 2d 卷积）。
+    `GELU(x + Norm(Conv(x)))`，打开 `pre_norm` 则是 `GELU(x + Conv(Norm(x)))`）——
+    残差在激活之前。卷积按通道独立（`groups = channels`），只在长度方向混合邻域、不混通道。
+    归一化与激活和 `mlp()` 统一（RMSNorm + GELU），归一化位置也跟 `mlp()` 一起由
+    `[arch] pre_norm` 决定（分别用 :class:`ConvNormResAct` / :class:`NormConvResAct`）；
+    `padding="same"` 保证长度不变，残差才加得回去。卷积本身由 :class:`_Conv2dAs1d`
+    实现（内部走 2d 卷积）。
 
     k / v 两侧的开关、核长、膨胀率都是分开传的（配置里是 `kv_conv_k_*` / `kv_conv_v_*`）。
 
     Args:
         channels: 通道数，同时也是卷积的输入 / 输出通道（逐通道卷积，二者必须相等才能残差）；
             `d_k` 或 `d_v`。
-        pre_norm: 归一化位置；`True` 用 :class:`NormConvActRes`（先归一化再卷积），`False` 用
-            :class:`ConvNormActRes`（先卷积再归一化）。
+        pre_norm: 归一化位置；`True` 用 :class:`NormConvResAct`（先归一化再卷积），`False` 用
+            :class:`ConvNormResAct`（先卷积再归一化）。两者都是先残差再激活。
         enabled: 这一侧是否启用；`False` 时返回 `None`（不建参数，调用方直接跳过）。
         kernel_size: 长度维上的核长，必须 `>= 1`。
         dilation: 长度维上的膨胀率，必须 `>= 1`。
@@ -154,7 +177,7 @@ def kv_residual_conv(
         raise ValueError(f"[arch] {name}_kernel_size 必须 >= 1，收到 {kernel_size}")
     if dilation < 1:
         raise ValueError(f"[arch] {name}_dilation 必须 >= 1，收到 {dilation}")
-    cls = NormConvActRes if pre_norm else ConvNormActRes
+    cls = NormConvResAct if pre_norm else ConvNormResAct
     return cls(_Conv2dAs1d(channels, kernel_size, dilation), ChannelRmsNorm(channels), nn.GELU())
 
 
@@ -258,8 +281,8 @@ class ByteDenseNet(BaseTensorModule):
         self.embed_k = TokenEmbedding(vocab_size, arch.d_k)
         self.embed_v = TokenEmbedding(vocab_size, arch.d_v)
         # mlp 的隐藏层与残差卷积都是 k、v 各自一套配置，互不影响。
-        self.mlp_k = mlp(arch.d_k, arch.d_k, *arch.mlp_k_hidden, pre_norm=arch.pre_norm)
-        self.mlp_v = mlp(arch.d_v, arch.d_v, *arch.mlp_v_hidden, pre_norm=arch.pre_norm)
+        self.mlp_k = mlp(arch.d_k, arch.d_k, *arch.mlp_k_hidden, pre_norm=arch.pre_norm, residual=True)
+        self.mlp_v = mlp(arch.d_v, arch.d_v, *arch.mlp_v_hidden, pre_norm=arch.pre_norm, residual=True)
         # 残差卷积在嵌入之后、各自的 mlp 之前；某一侧关掉时那一侧为 None 且不建参数。
         self.k_conv = kv_residual_conv(
             arch.d_k,

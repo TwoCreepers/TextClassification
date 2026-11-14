@@ -57,8 +57,8 @@ dense_block_dropout = 0
 head_dropout = 0
 attention_dropout = 0.3
 # byte 嵌入之后、mlp_k / mlp_v 之前各接一个逐通道残差卷积层（k、v 各自一套开关与参数）：
-#   x + GELU(Norm(Conv(x)))，归一化位置跟随下面的 pre_norm、与 mlp 一致（分别用
-#   ConvNormActRes / NormConvActRes）；
+#   GELU(x + Norm(Conv(x)))，归一化位置跟随下面的 pre_norm、与 mlp 一致（分别用
+#   ConvNormResAct / NormConvResAct）；
 #   卷积按通道独立（groups = C），只在长度方向混合邻域、不混通道，参数量约为通道混合版的
 #   1/C；k 侧的整条链路（嵌入 -> 卷积 -> mlp）都在 RoPE 之前，卷积看到的是不带位置相位的嵌入。
 #   关闭时不建任何参数，state_dict 与不打开时完全一致，已有 checkpoint 照常能载入；
@@ -77,12 +77,13 @@ kv_conv_k_kernel_size = 3
 kv_conv_k_dilation = 3
 kv_conv_v_kernel_size = 3
 kv_conv_v_dilation = 3
-# 是否预归一化（pre-norm）：true 时 mlp()（mlp_k / mlp_v / q_gen）用 NormMlpGelu、上面的
-# 残差卷积用 NormConvActRes（先 RMSNorm 再映射）；false 用 MlpNormGelu / ConvNormActRes
-# （先映射再 RMSNorm）。
+# 是否预归一化（pre-norm）：true 先 RMSNorm 再映射，false 先映射再 RMSNorm。
+#   mlp_k / mlp_v：NormMlpResGelu / MlpNormResGelu（gelu(x + ...)，残差在激活前）
+#   q_gen：        NormMlpGelu / MlpNormGelu（纯激活，不带残差）
+#   残差卷积：      NormConvResAct / ConvNormResAct（act(x + ...)，同样是先残差再激活）
 # 注意 pre_norm = true 会改变 norm 的通道数（q_gen 的 norm 从输出宽度变成输入宽度），
 # 同样需要重新训练；dense_block / compress 固定 pre-norm，不受这一项影响。
-pre_norm = false
+pre_norm = true
 
 [optim]
 lr = 8e-3

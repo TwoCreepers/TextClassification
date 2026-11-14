@@ -19,6 +19,8 @@ class _MlpGeluBase(BaseTensorModule):
 
     * :class:`MlpNormGelu`：``Linear -> [GELU -> Linear]* -> Norm -> GELU``；
     * :class:`NormMlpGelu`：``Norm -> Linear -> [GELU -> Linear]* -> GELU``；
+    * :class:`MlpNormResGelu`：``Linear -> [GELU -> Linear]* -> Norm -> 残差 -> GELU``；
+    * :class:`NormMlpResGelu`：``Norm -> Linear -> [GELU -> Linear]* -> 残差 -> GELU``；
     * :class:`NormMlpGeluCat`：``Norm -> Linear -> [GELU -> Linear]* -> GELU -> cat``；
     * :class:`NormMlp`：``Norm -> Linear 堆叠``（没有最终激活）。
 
@@ -84,6 +86,36 @@ class NormMlpGelu(_MlpGeluBase):
     @override
     def forward(self, x: Tensor) -> Tensor:
         return self.gelu(self.layers(self.norm(x)))
+
+
+class MlpNormResGelu(_MlpGeluBase):
+    """``Linear -> [GELU -> Linear]* -> Norm -> 残差 -> GELU``：``gelu(x + norm(mlp(x)))``。
+
+    残差加在激活之前；要求 ``in_c == out_c``，否则残差加不回去。归一化模块的通道数取
+    ``out_c``。
+
+    Example:
+        >>> import torch
+        >>> m = MlpNormResGelu(64, 64, 128, norm=torch.nn.Identity())
+        >>> m(torch.randn(2, 64, 32)).shape
+        torch.Size([2, 64, 32])
+    """
+
+    @override
+    def forward(self, x: Tensor) -> Tensor:
+        return self.gelu(x + self.norm(self.layers(x)))
+
+
+class NormMlpResGelu(_MlpGeluBase):
+    """``Norm -> Linear -> [GELU -> Linear]* -> 残差 -> GELU``：``gelu(x + mlp(norm(x)))``。
+
+    与 :class:`MlpNormResGelu` 的区别只有归一化位置：这里先归一化再映射（通道数取
+    ``in_c``），后者先映射再归一化（通道数取 ``out_c``）。同样要求 ``in_c == out_c``。
+    """
+
+    @override
+    def forward(self, x: Tensor) -> Tensor:
+        return self.gelu(x + self.layers(self.norm(x)))
 
 
 class NormMlpGeluCat(_MlpGeluBase):
