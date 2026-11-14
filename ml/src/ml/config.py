@@ -72,9 +72,10 @@ class ArchConfig:
 
     d_k: int = 64
     d_v: int = 64
-    # mlp_k / mlp_v 的中间隐藏层宽度数组：``(64, 128)`` 表示 d -> 64 -> 128 -> d；
+    # mlp_k / mlp_v 的中间隐藏层宽度数组（k、v 分开配）：``(64, 128)`` 表示 d -> 64 -> 128 -> d；
     # 空数组表示不加隐藏层（单层 d -> d，默认）。
-    mlp_hidden: Sequence[int] = ()
+    mlp_k_hidden: Sequence[int] = ()
+    mlp_v_hidden: Sequence[int] = ()
     # 宽度压缩：每 ``compress_every_rounds`` 轮把主干宽度压到当前的
     # ``1 / compress_denominator``；``compress_every_rounds = 0`` 表示不压缩。
     # 目标宽度下限是 ``n_q * d_v``（初始宽度），避免轮数多时塌缩得过窄；
@@ -96,17 +97,20 @@ class ArchConfig:
     dense_block_dropout: float = 0.0
     head_dropout: float = 0.0
     attention_dropout: float = 0.0
-    # byte 嵌入之后、mlp_k / mlp_v 之前各接一个逐通道残差卷积层（k、v 共用这一组配置）：
+    # byte 嵌入之后、mlp_k / mlp_v 之前各接一个逐通道残差卷积层（k、v 各自一套开关与参数）：
     # ``x + GELU(Norm(Conv(x)))``，卷积按通道独立（``groups = C``），只在长度方向混合邻域、
     # 不混通道，参数量约为通道混合版的 ``1 / C``；归一化位置跟随 ``pre_norm``、与 ``mlp()``
     # 一致（分别对应 ``ConvNormActRes`` / ``NormConvActRes``）。
-    # 关闭时不建任何参数，state_dict 与没有这一层时完全一致。
-    kv_conv_enabled: bool = False
-    # 卷积核长度与膨胀率：``kernel_size > 1`` 才有邻域感受野，``dilation > 1`` 在不增加
-    # 参数量的前提下继续放大感受野；感受野为 ``(kernel_size - 1) * dilation + 1`` 个字节。
-    # 二者都必须 >= 1；核长取奇数时 ``padding="same"`` 最快。
-    kv_conv_kernel_size: int = 3
-    kv_conv_dilation: int = 1
+    # 某一侧关闭时该侧不建任何参数，state_dict 与没有这一层时完全一致。
+    kv_conv_k_enabled: bool = False
+    kv_conv_v_enabled: bool = False
+    # 卷积核长度与膨胀率（k / v 各一套）：``kernel_size > 1`` 才有邻域感受野，``dilation > 1``
+    # 在不增加参数量的前提下继续放大感受野；感受野为 ``(kernel_size - 1) * dilation + 1`` 个字节。
+    # 都必须 >= 1；核长取奇数时 ``padding="same"`` 最快。
+    kv_conv_k_kernel_size: int = 3
+    kv_conv_k_dilation: int = 1
+    kv_conv_v_kernel_size: int = 3
+    kv_conv_v_dilation: int = 1
     # 是否预归一化（pre-norm）：True 时 ``mlp()``（mlp_k / mlp_v / q_gen）用 ``NormMlpGelu``、
     # 上面的残差卷积用 ``NormConvActRes``（先 RMSNorm 再映射）；False 用 ``MlpNormGelu`` /
     # ``ConvNormActRes``（先映射再 RMSNorm）。dense_block / compress 固定 pre-norm，不受影响。

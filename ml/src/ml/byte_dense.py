@@ -16,9 +16,10 @@ Dropout：主干特征在送入 ``q_gen``、每个 ``dense_block`` 以及分类�
 压缩点上除以 ``compress_denominator``（下限 ``d0``，最后一轮之后不压），压缩后的实际宽度
 作为 ``d_final``。
 
-k / v 分支：``[arch] kv_conv_enabled = true`` 时在 byte 嵌入之后、``mlp_k`` / ``mlp_v`` 之前
-各接一个逐通道残差卷积 ``x + GELU(Norm(Conv(x)))``（核长 / 膨胀率由 ``kv_conv_kernel_size`` /
-``kv_conv_dilation`` 配置，k、v 共用）：卷积按通道独立（``groups = C``），只在长度方向混合
+k / v 分支：``[arch] kv_conv_k_enabled`` / ``kv_conv_v_enabled`` 分别控制两侧在 byte 嵌入
+之后、``mlp_k`` / ``mlp_v`` 之前接的逐通道残差卷积 ``x + GELU(Norm(Conv(x)))``
+（核长 / 膨胀率在 ``kv_conv_k_*`` / ``kv_conv_v_*`` 里各配一套，两侧互不影响）：卷积按
+通道独立（``groups = C``），只在长度方向混合
 邻域、不混通道，参数量约为通道混合版的 ``1 / C``；k 侧因此仍在 RoPE 之前，卷积看到的是不带
 位置相位的嵌入。卷积内部按 ``(B, C, 1, L)`` 用 2d 卷积实现，为的是躲开 inductor 对 1d 卷积
 反向的静态形状固化（见 :class:`_Conv2dAs1d`）。归一化位置由 ``[arch] pre_norm`` 统一控制：
@@ -104,43 +105,56 @@ class _Conv2dAs1d(nn.Module):
         return self.conv(x.unsqueeze(-2)).squeeze(-2)
 
 
-def kv_residual_conv(channels: int, arch: ArchConfig) -> ConvNormActRes | NormConvActRes | None:
-    """嵌入与 ``mlp_k`` / ``mlp_v`` 之间的逐通道残差卷积：``x + GELU(Norm(Conv(x)))``。
+def kv_residual_conv(
+    channels: int,
+    *,
+    pre_norm: bool,
+    enabled: bool,
+    kernel_size: int,
+    dilation: int,
+    name: str,
+) -> ConvNormActRes | NormConvActRes | None:
+    """嵌入与 `mlp_k` / `mlp_v` 之间的逐通道残差卷积：`x + GELU(Norm(Conv(x)))`。
 
-    接在 byte 嵌入之后、``mlp_k`` / ``mlp_v`` 之前（``pre_norm = false`` 时是
-    ``x + GELU(Norm(Conv(x)))``，打开 ``pre_norm`` 则是 ``x + GELU(Conv(Norm(x)))``）；
-    卷积按通道独立（``groups = channels``），只在长度方向混合邻域、不混通道。归一化与激活和
-    ``mlp()`` 统一（RMSNorm + GELU），归一化位置也跟 ``mlp()`` 一起由 ``[arch] pre_norm``
-    决定（分别用 :class:`ConvNormActRes` / :class:`NormConvActRes`）；``padding="same"``
+    接在 byte 嵌入之后、`mlp_k` / `mlp_v` 之前（`pre_norm = false` 时是
+    `x + GELU(Norm(Conv(x)))`，打开 `pre_norm` 则是 `x + GELU(Conv(Norm(x)))`）；
+    卷积按通道独立（`groups = channels`），只在长度方向混合邻域、不混通道。归一化与激活和
+    `mlp()` 统一（RMSNorm + GELU），归一化位置也跟 `mlp()` 一起由 `[arch] pre_norm`
+    决定（分别用 :class:`ConvNormActRes` / :class:`NormConvActRes`）；`padding="same"`
     保证长度不变，残差才加得回去。卷积本身由 :class:`_Conv2dAs1d` 实现（内部走 2d 卷积）。
+
+    k / v 两侧的开关、核长、膨胀率都是分开传的（配置里是 `kv_conv_k_*` / `kv_conv_v_*`）。
 
     Args:
         channels: 通道数，同时也是卷积的输入 / 输出通道（逐通道卷积，二者必须相等才能残差）；
-            ``d_k`` 或 ``d_v``。
-        arch: 架构超参，用 ``kv_conv_enabled`` / ``kv_conv_kernel_size`` / ``kv_conv_dilation``。
+            `d_k` 或 `d_v`。
+        pre_norm: 归一化位置；`True` 用 :class:`NormConvActRes`（先归一化再卷积），`False` 用
+            :class:`ConvNormActRes`（先卷积再归一化）。
+        enabled: 这一侧是否启用；`False` 时返回 `None`（不建参数，调用方直接跳过）。
+        kernel_size: 长度维上的核长，必须 `>= 1`。
+        dilation: 长度维上的膨胀率，必须 `>= 1`。
+        name: 配置前缀（`kv_conv_k` / `kv_conv_v`），只用于报错信息。
 
     Returns:
-        ``kv_conv_enabled`` 为 ``False`` 时返回 ``None``（不建参数，调用方直接跳过）。
+        `enabled` 为 `False` 时返回 `None`，否则返回残差卷积层。
 
     Raises:
         ValueError: 核长或膨胀率小于 1。
 
     Note:
-        卷积刻意用 2d 实现而不是 ``Conv1d``：inductor 对 ``Conv1d`` 的反向会把序列长度
-        固化成静态值（20 个不同长度里第 9 个就撞 ``recompile_limit``，``fullgraph=True``
-        直接失败），``Conv2d`` 则全程符号形状（同样 20 个长度只编 3 张图、20/20 通过）。
-        所以这一层在 ``pad_to_max_length = false`` + ``compile.enabled = true`` 下也能用，
+        卷积刻意用 2d 实现而不是 `Conv1d`：inductor 对 `Conv1d` 的反向会把序列长度
+        固化成静态值（20 个不同长度里第 9 个就撞 `recompile_limit`，`fullgraph=True`
+        直接失败），`Conv2d` 则全程符号形状（同样 20 个长度只编 3 张图、20/20 通过）。
+        所以这一层在 `pad_to_max_length = false` + `compile.enabled = true` 下也能用，
         不必换 backend、也不必定长补齐；代价只是卷积本身比 1d 实现慢一点，见 :class:`_Conv2dAs1d`。
     """
-    if not arch.kv_conv_enabled:
+    if not enabled:
         return None
-    kernel_size = arch.kv_conv_kernel_size
-    dilation = arch.kv_conv_dilation
     if kernel_size < 1:
-        raise ValueError(f"[arch] kv_conv_kernel_size 必须 >= 1，收到 {kernel_size}")
+        raise ValueError(f"[arch] {name}_kernel_size 必须 >= 1，收到 {kernel_size}")
     if dilation < 1:
-        raise ValueError(f"[arch] kv_conv_dilation 必须 >= 1，收到 {dilation}")
-    cls = NormConvActRes if arch.pre_norm else ConvNormActRes
+        raise ValueError(f"[arch] {name}_dilation 必须 >= 1，收到 {dilation}")
+    cls = NormConvActRes if pre_norm else ConvNormActRes
     return cls(_Conv2dAs1d(channels, kernel_size, dilation), ChannelRmsNorm(channels), nn.GELU())
 
 
@@ -243,11 +257,26 @@ class ByteDenseNet(BaseTensorModule):
 
         self.embed_k = TokenEmbedding(vocab_size, arch.d_k)
         self.embed_v = TokenEmbedding(vocab_size, arch.d_v)
-        self.mlp_k = mlp(arch.d_k, arch.d_k, *arch.mlp_hidden, pre_norm=arch.pre_norm)
-        self.mlp_v = mlp(arch.d_v, arch.d_v, *arch.mlp_hidden, pre_norm=arch.pre_norm)
-        # 残差卷积在嵌入之后、各自的 mlp 之前；关掉时为 None 且不建参数。
-        self.k_conv = kv_residual_conv(arch.d_k, arch)
-        self.v_conv = kv_residual_conv(arch.d_v, arch)
+        # mlp 的隐藏层与残差卷积都是 k、v 各自一套配置，互不影响。
+        self.mlp_k = mlp(arch.d_k, arch.d_k, *arch.mlp_k_hidden, pre_norm=arch.pre_norm)
+        self.mlp_v = mlp(arch.d_v, arch.d_v, *arch.mlp_v_hidden, pre_norm=arch.pre_norm)
+        # 残差卷积在嵌入之后、各自的 mlp 之前；某一侧关掉时那一侧为 None 且不建参数。
+        self.k_conv = kv_residual_conv(
+            arch.d_k,
+            pre_norm=arch.pre_norm,
+            enabled=arch.kv_conv_k_enabled,
+            kernel_size=arch.kv_conv_k_kernel_size,
+            dilation=arch.kv_conv_k_dilation,
+            name="kv_conv_k",
+        )
+        self.v_conv = kv_residual_conv(
+            arch.d_v,
+            pre_norm=arch.pre_norm,
+            enabled=arch.kv_conv_v_enabled,
+            kernel_size=arch.kv_conv_v_kernel_size,
+            dilation=arch.kv_conv_v_dilation,
+            name="kv_conv_v",
+        )
         self.rope = RotaryPositionEmbedding(head_dim=arch.d_k)
 
         self.latent_q = nn.Parameter(empty(1, arch.n_q * arch.d_k, 1))
