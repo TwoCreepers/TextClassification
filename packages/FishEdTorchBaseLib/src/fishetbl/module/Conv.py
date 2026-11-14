@@ -14,6 +14,8 @@ class _ConvActBase(BaseTensorModule):
     相对位置由各子类的 ``forward`` 直接写死，不再有 ``norm_pos`` / ``act_pos`` /
     ``post_process`` 这类参数：
 
+    * :class:`ConvNormAct`：``Conv -> Norm -> Act``，即 ``act(norm(conv(x)))``（无残差）；
+    * :class:`NormConvAct`：``Norm -> Conv -> Act``，即 ``act(conv(norm(x)))``（无残差）；
     * :class:`ConvNormActRes`：``Conv -> Norm -> Act -> 残差``，即 ``x + act(norm(conv(x)))``；
     * :class:`NormConvActRes`：``Norm -> Conv -> Act -> 残差``，即 ``x + act(conv(norm(x)))``；
     * :class:`ConvNormResAct`：``Conv -> Norm -> 残差 -> Act``，即 ``act(x + norm(conv(x)))``；
@@ -30,6 +32,29 @@ class _ConvActBase(BaseTensorModule):
         self.conv = conv
         self.norm = norm
         self.act = act
+
+
+class ConvNormAct(_ConvActBase):
+    """``Conv -> Norm -> Act``：``act(norm(conv(x)))``（没有残差）。
+
+    不要求 ``conv`` 保持形状，通道数 / 长度都可以变。
+    """
+
+    @override
+    def forward(self, x: Tensor) -> Tensor:
+        return self.act(self.norm(self.conv(x)))
+
+
+class NormConvAct(_ConvActBase):
+    """``Norm -> Conv -> Act``：``act(conv(norm(x)))``（没有残差）。
+
+    与 :class:`ConvNormAct` 的区别只有归一化位置：这里先归一化再卷积，归一化模块的通道数取
+    输入通道数；后者先卷积再归一化，通道数取输出通道数。
+    """
+
+    @override
+    def forward(self, x: Tensor) -> Tensor:
+        return self.act(self.conv(self.norm(x)))
 
 
 class ConvNormActRes(_ConvActBase):

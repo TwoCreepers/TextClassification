@@ -224,8 +224,7 @@ THUCNews 里同一篇稿子被反复抓取的情况不少（模板化的行情�
 
 ## 架构（`[model] arch = "byte_dense"`）
 
-1. byte 嵌入 →（可选）逐通道残差卷积 → `RMSNorm -> MLP -> 残差 -> GELU`（即
-   `GELU(x + MLP(RMSNorm(x)))`，残差在激活之前）得到 K / V；**只有 K** 过 RoPE。MLP 可用
+1. byte 嵌入 →（可选）逐通道卷积 → `RMSNorm -> MLP(GELU)` 得到 K / V（不带残差）；**只有 K** 过 RoPE。MLP 可用
    `[arch] mlp_k_hidden` / `mlp_v_hidden` 各自加隐藏层（如 `[64, 128]` 即 `d -> 64 -> 128 -> d`），
    `[]` 表示保持单层；
 2. 可学习 latent query 对 `(K, V)` 做注意力，得到 `(B, n_q*d_v, 1)` 的单 token 特征；
@@ -243,18 +242,17 @@ THUCNews 里同一篇稿子被反复抓取的情况不少（模板化的行情�
 dropout，三处互相独立：`[arch] q_gen_dropout` / `dense_block_dropout` / `head_dropout`
 （`0` 表示关闭）。
 
-### k / v 分支的残差卷积（`[arch] kv_conv_k_enabled` / `kv_conv_v_enabled`）
+### k / v 分支的卷积（`[arch] kv_conv_k_enabled` / `kv_conv_v_enabled`）
 
 默认两侧都关闭；打开后在 byte 嵌入与 `mlp_k` / `mlp_v` 之间插一层
-`GELU(x + Norm(Conv(x)))`（**先残差再激活**；`pre_norm = true` 时是 `GELU(x + Conv(Norm(x)))`）。
+`GELU(Norm(Conv(x)))`（不带残差；`pre_norm = true` 时是 `GELU(Conv(Norm(x)))`）。
 **k、v 完全独立**：两侧各有一个开关、各自的核长与膨胀率，可以只开一侧、也可以两边配不同的感受野。
 
 - 卷积是**逐通道**的（`groups = C`）：每个通道各自在长度方向做一维卷积，只看邻域、不混通道，
   参数量约为通道混合版的 `1/C`。核长 / 膨胀率由 `[arch] kv_conv_k_kernel_size` /
   `kv_conv_k_dilation`（或 `kv_conv_v_*`）控制，感受野是 `(kernel_size - 1) * dilation + 1` 个字节。
 - 归一化位置与 `mlp()` 一致，由 `[arch] pre_norm` 统一控制（见下）：`false` 用
-  `ConvNormResAct`（`GELU(x + Norm(Conv(x)))`），`true` 用 `NormConvResAct`
-  （`GELU(x + Conv(Norm(x)))`）。
+  `ConvNormAct`（`GELU(Norm(Conv(x)))`），`true` 用 `NormConvAct`（`GELU(Conv(Norm(x)))`）。
 - 实现上按 `(B, C, 1, L)` 走 2d 卷积而不是 `Conv1d`：inductor 对 1d 卷积反向会把序列长度
   固化成静态值（20 个不同长度时第 9 个就撞 `recompile_limit`，`fullgraph=True` 直接失败），
   2d 版本 20/20 通过、只编 3 张图。所以变长补齐 + `inductor` 照常可用，不用换 backend，
@@ -268,11 +266,11 @@ dropout，三处互相独立：`[arch] q_gen_dropout` / `dense_block_dropout` / 
 
 | 位置 | `pre_norm = false` | `pre_norm = true` |
 | --- | --- | --- |
-| `mlp_k` / `mlp_v` | `MlpNormResGelu`：`GELU(x + Norm(MLP(x)))` | `NormMlpResGelu`：`GELU(x + MLP(Norm(x)))` |
-| `q_gen` | `MlpNormGelu`：`GELU(Norm(MLP(x)))`（无残差） | `NormMlpGelu`：`GELU(MLP(Norm(x)))`（无残差） |
-| `k_conv` / `v_conv` | `ConvNormResAct`：`GELU(x + Norm(Conv(x)))` | `NormConvResAct`：`GELU(x + Conv(Norm(x)))` |
+| `mlp_k` / `mlp_v` / `q_gen` | `MlpNormGelu`：`GELU(Norm(MLP(x)))` | `NormMlpGelu`：`GELU(MLP(Norm(x)))` |
+| `k_conv` / `v_conv` | `ConvNormAct`：`GELU(Norm(Conv(x)))` | `NormConvAct`：`GELU(Conv(Norm(x)))` |
 
-`mlp_k` / `mlp_v` 与两个残差卷积都是**先残差再激活**，只有 `q_gen` 是纯激活。
+这几处都**不带残差**（库里另有 `MlpNormResGelu` / `NormMlpResGelu` / `ConvNormResAct` /
+`NormConvResAct` 等带残差变体，目前模型没有用）。
 `dense_block` / `compress` 固定 pre-norm，不受这一项影响；切换会改变 `q_gen` 的归一化
 通道数（从输出宽度变成输入宽度），也需要重新训练。
 

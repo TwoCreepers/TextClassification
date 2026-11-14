@@ -98,9 +98,9 @@ class ArchConfig:
     head_dropout: float = 0.0
     attention_dropout: float = 0.0
     # byte 嵌入之后、mlp_k / mlp_v 之前各接一个逐通道残差卷积层（k、v 各自一套开关与参数）：
-    # ``GELU(x + Norm(Conv(x)))``（先残差再激活），卷积按通道独立（``groups = C``），只在长度
-    # 方向混合邻域、不混通道，参数量约为通道混合版的 ``1 / C``；归一化位置跟随 ``pre_norm``、
-    # 与 ``mlp()`` 一致（分别对应 ``ConvNormResAct`` / ``NormConvResAct``）。
+    # ``GELU(Norm(Conv(x)))``（不带残差），卷积按通道独立（``groups = C``），只在长度方向
+    # 混合邻域、不混通道，参数量约为通道混合版的 ``1 / C``；归一化位置跟随 ``pre_norm``、
+    # 与 ``mlp()`` 一致（分别对应 ``ConvNormAct`` / ``NormConvAct``）。
     # 某一侧关闭时该侧不建任何参数，state_dict 与没有这一层时完全一致。
     kv_conv_k_enabled: bool = False
     kv_conv_v_enabled: bool = False
@@ -112,10 +112,8 @@ class ArchConfig:
     kv_conv_v_kernel_size: int = 3
     kv_conv_v_dilation: int = 1
     # 是否预归一化（pre-norm）：True 先 RMSNorm 再映射，False 先映射再 RMSNorm。
-    #   mlp_k / mlp_v：``NormMlpResGelu`` / ``MlpNormResGelu``（都是 ``gelu(x + ...)``，
-    #                 残差在激活之前）；
-    #   q_gen：        ``NormMlpGelu`` / ``MlpNormGelu``（纯激活，不带残差）；
-    #   残差卷积：      ``NormConvResAct`` / ``ConvNormResAct``（同样是 ``act(x + ...)``）。
+    #   mlp_k / mlp_v / q_gen：``NormMlpGelu`` / ``MlpNormGelu``（纯激活，不带残差）；
+    #   kv 卷积：              ``NormConvAct`` / ``ConvNormAct``（``act(...)``，同样不带残差）。
     # dense_block / compress 固定 pre-norm，不受影响。
     pre_norm: bool = False
 
