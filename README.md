@@ -5,9 +5,10 @@
 
 - `first_token`：只取第一个字节过一层线性层的极简基线，用来打通数据 / 训练 / 评测链路；
 - `byte_dense`：`ByteDenseNet`，纯 dense 连接 + latent query 注意力；
-  静态记忆前还可选一层逐通道残差卷积（`[arch] kv_conv_k_enabled` / `kv_conv_v_enabled`）。
+  静态记忆前还可选一层逐通道卷积（`[arch] kv_conv_k_enabled` / `kv_conv_v_enabled`）。
 
-超参集中在 `ml/config/config.toml`；模型结构与实现细节见 [`ml/README.md`](ml/README.md)。
+超参集中在 `ml/config/config.toml`；模型结构与实现细节见 [`ml/README.md`](ml/README.md)，
+多组种子的结果见其中的[「实验结果」](ml/README.md#实验结果)一节。
 
 ## 结构
 
