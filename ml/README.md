@@ -280,37 +280,38 @@ dropout，三处互相独立：`[arch] q_gen_dropout` / `dense_block_dropout` / 
 
 ## 实验结果
 
-`byte_dense` 多组种子的主结果（THUCNews，14 类），代码状态 `ac89bc5`，2026-11-15 跑完。
+`byte_dense` 在 THUCNews（14 类）上的多组种子结果（n = 3，2026-11-15）。
 
 配置：`d_k = d_v = 16`、`mlp_k_hidden = mlp_v_hidden = [32]`、`n_q = 16`、`d_block = 64`、
 `blocks_per_round = 2`、`rounds = 3`、`pre_norm = true`、kv 卷积打开但 `kv_conv_k_norm` /
-`kv_conv_v_norm = false`（该层退化成 `GELU(Conv(x))`）、三处 MLP 与卷积都不带残差，共
-**887,246** 参数；batch 1024、bf16-mixed、EMA 打开、`torch.compile` 打开；早停
-`patience = 10`、`min_delta = 1e-4`、`max_epochs = 50`。
+`kv_conv_v_norm = false`（该层退化成 `GELU(Conv(x))`）、MLP 与卷积都不带残差，共 **887,246**
+参数；batch 1024、bf16-mixed、EMA 与 `torch.compile` 打开；早停 `patience = 10`、
+`min_delta = 1e-4`、`max_epochs = 50`。
 
-| seed | 实际 epoch | best epoch | val/f1_macro | val/loss | val/top1 | test/f1_macro | test/loss | test/top1 |
+| seed | epoch 数 | best epoch | val/f1_macro | val/loss | val/top1 | test/f1_macro | test/loss | test/top1 |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | 42 | 39 | 28 | 0.9285 | 0.6943 | 0.9416 | 0.9293 | 0.6947 | 0.9413 |
 | 43 | 45 | 34 | 0.9263 | 0.7030 | 0.9384 | 0.9261 | 0.7029 | 0.9383 |
 | 44 | 36 | 25 | 0.9280 | 0.6924 | 0.9413 | 0.9310 | 0.6908 | 0.9424 |
 | **均值 ± 标准差** | — | — | 0.9276 ± 0.0011 | — | — | **0.9288 ± 0.0025** | 0.6961 ± 0.0062 | 0.9407 ± 0.0021 |
 
-- `best epoch` 从 0 开始数（TensorBoard 的 `epoch` 标量），是 `val/f1_macro` 最高的那个 epoch。
-- 三个种子都触发了早停（分别 39 / 45 / 36 个 epoch），最优 epoch 落在 25–34 之间，说明这个配置
-  的收敛位置有 9 个 epoch 量级的抖动；macro F1 的种子间标准差是 0.0011（val）/ 0.0025（test）。
-- 测试集只用来汇报、不参与调参：训练时 `ModelCheckpoint` 盯的是 `val/f1_macro`。
-- 种子 45 在蓝屏时中断（跑到 epoch 23，当时 best `val/f1_macro = 0.9260`），种子 46 没启动；
-  上表只统计完整跑完并评测过的 42 / 43 / 44，不补跑。
+- `best epoch` 从 0 开始数（TensorBoard 的 `epoch` 标量），是 `val/f1_macro` 最高的那个 epoch；
+  三个种子分别落在 28 / 34 / 25。
+- 三个种子都触发了早停（分别 39 / 45 / 36 个 epoch）；macro F1 的种子间标准差是 0.0011（val）/
+  0.0025（test），而训练末段逐 epoch 的 §|Δ val/f1_macro|§ 中位数约 2.5e-4、最大 8.7e-4 ——
+  种子之间的差异比单个种子的 epoch 抖动大一个量级。
+- 测试集只用于汇报、不参与调参：训练时 `ModelCheckpoint` 盯的是 `val/f1_macro`。
 
-日志与 ckpt 在 `lightning_logs/byte_dense_nokvnorm_s{42,43,44}/version_0/`。复现单条（种子配置
-就是把 `ml/config/config.toml` 的 `[trainer] seed` 改成 42 / 43 / 44、`[logger] name` 改成
-`byte_dense_nokvnorm_s<N>`）：
+复现：把 `ml/config/config.toml` 的 `[trainer] seed` 依次改成 42 / 43 / 44 各跑一遍
+（`[logger] name` 建议带上种子号，免得几次运行混进同一个日志目录），再评测测试集：
 
 ```powershell
-uv run ml-train --config tmp/seeds/seed_42.toml
-uv run ml-test --config tmp/seeds/seed_42.toml `
-  --checkpoint lightning_logs/byte_dense_nokvnorm_s42/version_0/checkpoints/best.ckpt --split test
+uv run ml-train --config ml/config/config.toml
+uv run ml-test --config ml/config/config.toml --split test
 ```
+
+`ml-test` 默认取 `save_dir/name` 下最新一次训练的 `best.ckpt`，要评测指定运行就加
+`--checkpoint <路径>`。
 
 ## 约定
 
